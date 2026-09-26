@@ -163,7 +163,7 @@ pub fn run() {
 }
 
 fn load_tray_template_icon() -> Result<Image<'static>, String> {
-    let reader = image::ImageReader::new(Cursor::new(include_bytes!("../../assets/women.png")))
+    let reader = image::ImageReader::new(Cursor::new(include_bytes!("../../assets/tray-icon.png")))
         .with_guessed_format()
         .map_err(|e| format!("failed to guess tray icon format: {e}"))?;
     let decoded = reader

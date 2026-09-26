@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/app-icon-composed.png" alt="ZMate" width="128" height="128" />
+</p>
+
 <h1 align="center">ZMate</h1>
 
 <p align="center">
