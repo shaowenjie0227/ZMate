@@ -1,11 +1,7 @@
-<p align="center">
-  <img src="assets/app-icon-composed.png" alt="AiMaMi" width="128" height="128" />
-</p>
-
-<h1 align="center">AiMaMi</h1>
+<h1 align="center">ZMate</h1>
 
 <p align="center">
-  <strong>A native desktop companion for OpenAI Codex — manage accounts, routing, sessions, and local configuration in one place.</strong>
+  <strong>A native desktop management panel for ZCode — providers, relay-site integration, MCP, Skills, sessions, and maintenance in one place.</strong>
 </p>
 
 <p align="center">
@@ -16,35 +12,38 @@
 
 ## Overview
 
-Codex stores accounts, sessions, MCP entries, Skills, smart-router settings, and relay configuration across multiple files under `~/.codex`. Multi-account switching, quota exhaustion, third-party model setup, session cleanup, and config drift quickly turn day-to-day work into hand-editing TOML, JSON, and SQLite.
+ZCode stores provider configuration, desktop settings, MCP entries, Skills, custom instructions, and session data across multiple files under `~/.zcode`. Wiring up a relay provider means hand-editing `provider_config.json`; cleaning up Skills or AGENTS.md means finding the right JSON block first — and one wrong keystroke can break the desktop client.
 
-AiMaMi is built with **Tauri 2, React, and Rust**. It consolidates these high-frequency workflows — including smart routing and relay management — into a single desktop app that reads and writes Codex data locally, reducing the risk of manual file edits.
+ZMate is built with **Tauri 2, React, and Rust**. It consolidates these high-frequency workflows into a single desktop app that reads and writes ZCode data locally, with automatic backup before every change. It can also connect to your **new-api**-compatible relay site to surface balance, usage, and API keys — site tokens are stored locally and never leave your machine except to talk to the site itself.
 
 ---
 
 ## Core Capabilities
 
-| Module | Pain point addressed |
+| Module | What it does |
 | --- | --- |
-| **Account management** | Switching accounts by editing `auth.json`; scattered quota views; cumbersome import/export |
-| **Auto-switch** | Work stops when 5-hour or weekly quota runs out; need automatic fallback and Codex restart |
-| **Smart router** | Use relay models inside Codex Desktop while keeping historical threads resumable |
-| **Relay management** | Provider setup, connectivity tests, import/export, and router diagnostics |
-| **Session management** | Safely inspect, analyze, and bulk-clean local threads from the real index |
-| **MCP / Skills** | Manage MCP entries and Skills lifecycle in the UI, with backup and restore |
-| **Plugins** | Unified toggles for built-in extensions (e.g. web tools, image support) |
-| **Custom instructions** | Manage only the AiMaMi-managed block in `~/.codex/AGENTS.md`, with preview and rollback |
-| **System maintenance** | Diagnose, clean, rebuild registry, force-quit Codex, fix common config issues |
-| **Settings & runtime** | Theme, language, quota refresh, API proxy, update checks; tray and macOS notch quota display |
+| **Dashboard** | Balance / today / week / month usage from the connected site, ZCode running status and data health, session & token trends |
+| **Providers** | Inject custom model providers into `provider_config.json` — add, edit, enable/disable, delete, with per-model reasoning levels and auto backup |
+| **Site import wizard** | Connect a new-api site in three ways: paste an existing key, create a key on the site (group picker with rate multipliers), or manual config |
+| **Stream test** | Step-by-step connectivity test with staged timing and a live SSE response stream |
+| **API keys** | List, create, enable/disable, and delete site tokens; one-click import a key into ZCode as a provider |
+| **Usage logs** | Per-request input/output tokens (with cache hits), cost, first-token latency and total duration; type/time filters and pagination |
+| **Wallet** | Site balance, total usage and request count, redemption-code top-up |
+| **MCP** | Manage MCP entries in the ZCode CLI config with backup |
+| **Skills** | Manage ZCode Skills lifecycle with backup |
+| **Custom instructions** | Only the ZMate-managed block in `AGENTS.md` (`ZMATE_*` markers), with preview and rollback |
+| **Sessions** | Read-only browsing of local ZCode sessions — list, stats, and a full trajectory / per-turn answer view |
+| **Maintenance** | ZCode download portal, system diagnostics, traffic-proxy switch, backup cleanup, restart ZCode |
+| **Settings** | Theme, accent color, language, and a write-guard that detects a running ZCode before touching its config |
 
-**Smart router note:** Relay models are forwarded through AiMaMi's local proxy. Keep AiMaMi running while Codex uses relay models.
+---
 
-<p align="center">
-  <img src="assets/console.png" alt="AiMaMi" width="1200" height="812" />
-</p>
-<p align="center">
-  <img src="assets/aimami-qun.png" alt="AiMaMi community QR code" width="400" height="300" />
-</p>
+## Data Safety
+
+- Every config write is backed up first; ZMate keeps its own backups under `~/.zcode/zmate/`.
+- `AGENTS.md` is only modified inside the `ZMATE_*` managed block — your own content is never touched.
+- Session browsing is strictly read-only.
+- Site access tokens are stored locally (`~/.zcode/zmate/settings.json`) and only ever sent to the site you connected.
 
 ---
 
@@ -52,25 +51,24 @@ AiMaMi is built with **Tauri 2, React, and Rust**. It consolidates these high-fr
 
 | Platform | Notes |
 | --- | --- |
-| macOS | Universal (Apple Silicon + Intel), macOS 12+ |
-| Windows | x64, NSIS installer |
-| Linux | Best-effort support for some workflows |
+| macOS | macOS 12+ |
+| Windows | Planned |
 
 ---
 
 ## Tech Stack
 
-Tauri 2 · React 18 · TypeScript · Vite 6 · Tailwind CSS · shadcn/ui · Rust
+Tauri 2 · React 18 · TypeScript · Vite · Tailwind CSS · shadcn/ui · Rust
 
 ---
 
 ## Quick Start
 
-**Requirements:** Node.js · pnpm · Rust · [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+**Requirements:** Node.js · pnpm · Rust · [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). A ZCode desktop install is recommended (most features read from `~/.zcode`).
 
 ```bash
-git clone https://github.com/borawong/AiMaMi.git
-cd AiMaMi
+git clone https://github.com/shaowenjie0227/ZMate.git
+cd ZMate
 pnpm install
 pnpm tauri dev
 ```
@@ -89,8 +87,7 @@ pnpm tauri build                                  # Production build
 src/           React frontend
 src-tauri/     Tauri shell and Rust backend
 src/locales/   i18n (en / zh)
-scripts/       Build and release scripts
-assets/        Branding and documentation assets
+assets/        Documentation assets
 ```
 
 ---
@@ -99,16 +96,25 @@ assets/        Branding and documentation assets
 
 ```text
 React UI ── invoke() ──▶ Tauri commands ──▶ core/
-                                              ├── ~/.codex          (Codex native)
-                                              └── ~/.codex/codexmate/ (AiMaMi app data)
-                         platform/            macOS / Windows implementations
+                                            ├── ~/.zcode/v2/      (provider_config.json · setting.json)
+                                            ├── ~/.zcode/cli/     (config.json — MCP)
+                                            ├── ~/.zcode/         (sessions · AGENTS.md · Skills)
+                                            ├── ~/.zcode/zmate/   (ZMate app data & backups)
+                                            └── new-api site      (optional, HTTPS)
+                         platform/           macOS implementation (Windows planned)
 ```
+
+---
+
+## Acknowledgments
+
+ZMate started as a fork of [AiMaMi](https://github.com/borawong/AiMaMi) (a desktop companion for OpenAI Codex) and was reworked for ZCode. Thanks to [@borawong](https://github.com/borawong) for the original design and implementation.
 
 ---
 
 ## Contributing
 
-Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, validation steps, and local Codex data-safety guidance. For larger changes, open an issue first so the approach can be discussed early.
+Issues and pull requests are welcome. For larger changes, open an issue first so the approach can be discussed early.
 
 ---
 
@@ -120,4 +126,4 @@ Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING
 
 ## Disclaimer
 
-AiMaMi is an independent tool for local Codex workflows. It is not affiliated with, endorsed by, or sponsored by OpenAI. Use third-party relay services at your own risk and comply with their terms of service.
+ZMate is an independent tool for local ZCode workflows. It is not affiliated with, endorsed by, or sponsored by Z.ai. Use third-party relay sites at your own risk and comply with their terms of service.

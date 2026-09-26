@@ -1,11 +1,7 @@
-<p align="center">
-  <img src="assets/app-icon-composed.png" alt="AiMaMi" width="128" height="128" />
-</p>
-
-<h1 align="center">AiMaMi</h1>
+<h1 align="center">ZMate</h1>
 
 <p align="center">
-  <strong>面向 OpenAI Codex 的原生桌面伴侣 —— 统一管理账号、路由、会话与本地配置。</strong>
+  <strong>面向 ZCode 的原生桌面管理面板 —— 供应商、中转站集成、MCP、Skills、会话与维护，一站式管理。</strong>
 </p>
 
 <p align="center">
@@ -16,35 +12,38 @@
 
 ## 概述
 
-Codex 的账号、会话、MCP、Skills、智能路由与中转配置分散在 `~/.codex` 下的多个文件里。多账号切换、额度耗尽、第三方模型接入与路由维护、会话清理和配置漂移，都会把日常操作变成手改 TOML / JSON / SQLite。
+ZCode 的供应商配置、桌面端设置、MCP、Skills、自定义指令与会话数据分散在 `~/.zcode` 下的多个文件里。接一个中转供应商要手改 `provider_config.json`，清理 Skills 或 `AGENTS.md` 得先找到对应字段——一个手滑就可能弄坏桌面端配置。
 
-AiMaMi 基于 **Tauri 2 + React + Rust**，把这些高频操作 —— 含智能路由与中转管理 —— 收敛到一个桌面应用里，在本地安全读写 Codex 数据，减少手工改文件带来的风险。
+ZMate 基于 **Tauri 2 + React + Rust**，把这些高频操作收敛到一个桌面应用里，在本地读写 ZCode 数据，每次改动前自动备份。同时可选接入 **new-api** 协议的中转站，在面板内查看余额、用量与 API 密钥——站点令牌只保存在本机，除与站点通信外不会发往任何地方。
 
 ---
 
 ## 核心能力
 
-| 模块 | 解决的痛点 |
+| 模块 | 功能 |
 | --- | --- |
-| **账号管理** | 多账号切换靠手改 `auth.json`；额度分散、导入导出麻烦 |
-| **自动切换** | 5 小时 / 周额度触顶后任务中断，需自动找可用账号并重启 Codex |
-| **智能路由** | 在 Codex 桌面内使用中转模型，同时尽量保留历史线程可续聊 |
-| **中转管理** | Provider 配置、连通性测试、导入导出与路由诊断 |
-| **会话管理** | 基于真实索引安全查看、统计与批量清理本地线程 |
-| **MCP / Skills** | 图形化管理 MCP 条目与 Skills 生命周期，支持备份恢复 |
-| **插件** | 统一管理内置扩展（如 web tools、image support） |
-| **自定义指令** | 仅管理 `~/.codex/AGENTS.md` 中的 AiMaMi 受控区块，支持预览与回滚 |
-| **系统维护** | 诊断、清理、重建 registry、强杀 Codex、修复常见配置问题 |
-| **设置与运行时** | 主题、语言、额度刷新、API 代理、更新检查；托盘与 macOS 刘海额度展示 |
+| **仪表盘** | 站点余额与今日 / 本周 / 本月用量，ZCode 运行状态与数据健康，会话与 Token 趋势图 |
+| **供应商** | 向 `provider_config.json` 注入自定义模型供应商：新增、编辑、启停、删除，支持按模型配置推理档位，改动自动备份 |
+| **站点接入向导** | 三种方式接入 new-api 站点：粘贴已有 Key、在站点上创建 Key（可选分组、展示倍率）、手动配置 |
+| **流式测速** | 分阶段计时 + SSE 响应流实时展示的连通性测试 |
+| **API 密钥** | 站点令牌的查看、创建、启停与删除，一键把密钥导入 ZCode 成为供应商 |
+| **使用日志** | 每次请求的输入 / 输出 Token（含缓存命中）、消费金额、首字延迟与总耗时，支持类型 / 时间筛选与分页 |
+| **钱包** | 站点余额、累计用量与请求数，兑换码充值 |
+| **MCP 管理** | 图形化管理 ZCode CLI 配置中的 MCP 条目，支持备份 |
+| **Skills 管理** | 管理 ZCode Skills 生命周期，支持备份 |
+| **自定义指令** | 仅管理 `AGENTS.md` 中的 ZMate 受控区块（`ZMATE_*` 标记），支持预览与回滚 |
+| **会话** | 只读浏览 ZCode 本地会话：列表、统计，支持完整轨迹 / 按轮次回答两种视图 |
+| **维护工具** | ZCode 下载入口、系统诊断、流量代理开关、备份清理、重启 ZCode |
+| **系统设置** | 主题、主题色、语言，以及写入前检测 ZCode 是否运行的防冲突保护 |
 
-**智能路由说明：** 中转模型经 AiMaMi 本地代理转发，使用期间需保持 AiMaMi 运行。
+---
 
-<p align="center">
-  <img src="assets/console.png" alt="AiMaMi" width="1200" height="812" />
-</p>
-<p align="center">
-  <img src="assets/qr1.png" alt="AiMaMi 社区群二维码" width="400" height="300" />
-</p>
+## 数据安全
+
+- 所有配置写入前自动备份，备份统一存放在 `~/.zcode/zmate/`。
+- `AGENTS.md` 只修改 `ZMATE_*` 受控区块内的内容，不碰用户自己的内容。
+- 会话浏览严格只读。
+- 站点访问令牌只保存在本机（`~/.zcode/zmate/settings.json`），且仅发往所连接的站点。
 
 ---
 
@@ -52,33 +51,32 @@ AiMaMi 基于 **Tauri 2 + React + Rust**，把这些高频操作 —— 含智�
 
 | 平台 | 说明 |
 | --- | --- |
-| macOS | Universal（Apple Silicon + Intel），macOS 12+ |
-| Windows | x64，NSIS 安装包 |
-| Linux | 部分能力为尽力支持 |
+| macOS | macOS 12+ |
+| Windows | 计划中 |
 
 ---
 
 ## 技术栈
 
-Tauri 2 · React 18 · TypeScript · Vite 6 · Tailwind CSS · shadcn/ui · Rust
+Tauri 2 · React 18 · TypeScript · Vite · Tailwind CSS · shadcn/ui · Rust
 
 ---
 
 ## 快速开始
 
-**环境要求：** Node.js · pnpm · Rust · [Tauri 系统依赖](https://v2.tauri.app/start/prerequisites/)
+**环境要求：** Node.js · pnpm · Rust · [Tauri 系统依赖](https://v2.tauri.app/start/prerequisites/)。建议已安装 ZCode 桌面端（大部分功能读取 `~/.zcode` 数据）。
 
 ```bash
-git clone https://github.com/borawong/AiMaMi.git
-cd AiMaMi
+git clone https://github.com/shaowenjie0227/ZMate.git
+cd ZMate
 pnpm install
 pnpm tauri dev
 ```
 
 ```bash
-pnpm build                                      # 前端构建检查
+pnpm build                                        # 前端构建检查
 cargo check --manifest-path src-tauri/Cargo.toml  # Rust 检查
-pnpm tauri build                                # 生产构建
+pnpm tauri build                                  # 生产构建
 ```
 
 ---
@@ -89,8 +87,7 @@ pnpm tauri build                                # 生产构建
 src/           React 前端
 src-tauri/     Tauri 壳与 Rust 后端
 src/locales/   国际化（中 / 英）
-scripts/       构建与发布脚本
-assets/        品牌与文档素材
+assets/        文档素材
 ```
 
 ---
@@ -99,16 +96,25 @@ assets/        品牌与文档素材
 
 ```text
 React UI ── invoke() ──▶ Tauri commands ──▶ core/
-                                              ├── ~/.codex          (Codex 原生)
-                                              └── ~/.codex/codexmate/ (AiMaMi 数据)
-                         platform/            macOS / Windows 差异实现
+                                            ├── ~/.zcode/v2/      (provider_config.json · setting.json)
+                                            ├── ~/.zcode/cli/     (config.json — MCP)
+                                            ├── ~/.zcode/         (会话 · AGENTS.md · Skills)
+                                            ├── ~/.zcode/zmate/   (ZMate 自身数据与备份)
+                                            └── new-api 站点       (可选，HTTPS)
+                         platform/           macOS 实现（Windows 计划中）
 ```
+
+---
+
+## 致谢
+
+ZMate 由 [AiMaMi](https://github.com/borawong/AiMaMi)（面向 OpenAI Codex 的桌面伴侣）分叉改造而来，感谢原作者 [@borawong](https://github.com/borawong) 的设计与实现。
 
 ---
 
 ## 参与贡献
 
-欢迎提交 Issue 与 Pull Request。请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，了解开发环境、提交前检查以及本地 Codex 数据安全注意事项。较大改动建议先开 Issue 讨论方案。
+欢迎提交 Issue 与 Pull Request。较大改动建议先开 Issue 讨论方案。
 
 ---
 
@@ -120,4 +126,4 @@ React UI ── invoke() ──▶ Tauri commands ──▶ core/
 
 ## 免责声明
 
-AiMaMi 是独立的 Codex 本地工作流工具，与 OpenAI 无隶属、背书或赞助关系。使用第三方中转服务请自行评估风险并遵守相应条款。
+ZMate 是独立的 ZCode 本地工作流工具，与 Z.ai 无隶属、背书或赞助关系。使用第三方中转站请自行评估风险并遵守相应条款。
