@@ -1,5 +1,10 @@
 pub mod custom_instructions;
+pub mod dashboard;
 pub mod mcp;
 pub mod models;
-pub mod repository;
+pub mod newapi;
+pub mod providers;
+pub mod sessions;
+pub mod settings;
 pub mod skills;
+pub mod zcode_proxy;

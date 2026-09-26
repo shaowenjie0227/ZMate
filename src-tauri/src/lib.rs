@@ -2,27 +2,28 @@ pub mod commands;
 pub mod core;
 pub mod platform;
 
-use core::repository::Repository;
-use image::ImageReader;
-use platform::paths::CodexPaths;
+use platform::paths::ZCodePaths;
 use std::cell::RefCell;
 use std::io::Cursor;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tauri::image::Image;
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, RunEvent};
 
 pub fn run() {
-    let shared_paths = Arc::new(CodexPaths::new());
+    let shared_paths = Arc::new(ZCodePaths::new());
+    if let Err(error) = shared_paths.ensure_app_directories() {
+        eprintln!("[ZMate] failed to prepare app data dir: {error}");
+    }
 
     let single_instance_guard = match platform::single_instance::acquire(&shared_paths) {
         Ok(guard) => guard,
         Err(error) => {
-            eprintln!("[AiMaMi] another instance is already running; exiting: {error}");
+            eprintln!("[ZMate] another instance is already running; exiting: {error}");
             let activated = platform::single_instance::request_existing_instance_activation();
             if !activated {
-                eprintln!("[AiMaMi] failed to activate the running instance");
+                eprintln!("[ZMate] failed to activate the running instance");
             }
             return;
         }
@@ -30,24 +31,14 @@ pub fn run() {
     let single_instance_guard = Rc::new(RefCell::new(Some(single_instance_guard)));
 
     #[cfg(target_os = "windows")]
-    let updater_plugin_builder = {
-        let builder = tauri_plugin_updater::Builder::new();
-        if let Some(arg) = platform::update::windows_current_install_dir_arg() {
-            builder.installer_arg(arg)
-        } else {
-            builder
-        }
-    };
-    #[cfg(not(target_os = "windows"))]
-    let updater_plugin_builder = tauri_plugin_updater::Builder::new();
+    let _updater_install_dir_arg = platform::update::windows_current_install_dir_arg();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(updater_plugin_builder.build())
-        .manage(Mutex::new(Repository::new()))
+        .manage(shared_paths.clone())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let win = window.clone();
@@ -61,20 +52,7 @@ pub fn run() {
                 });
             }
 
-            let repo_state: tauri::State<'_, Mutex<Repository>> = app.state();
-            let hotspot_enabled = repo_state
-                .lock()
-                .map(|r| r.get_hotspot_enabled())
-                .unwrap_or(false);
-            eprintln!("[AiMaMi] startup: hotspot_enabled={hotspot_enabled}");
-            commands::hotspot::register_hotspot_relayout_observers(app.handle());
-            if hotspot_enabled && platform::screen::has_notch_screen() {
-                if let Err(e) = commands::hotspot::create_hotspot_window(app.handle()) {
-                    eprintln!("[AiMaMi] failed to create hotspot window at startup: {e}");
-                }
-            }
-
-            let tray_menu = commands::tray_menu::create_bootstrap_tray_menu(app.handle())
+            let tray_menu = commands::tray_menu::create_tray_menu(app.handle())
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             let tray_icon = load_tray_template_icon()
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -82,7 +60,7 @@ pub fn run() {
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
                 .icon_as_template(true)
-                .tooltip("AiMaMi")
+                .tooltip("ZMate")
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| {
                     commands::tray_menu::handle_tray_menu_event(app, &event.id.0);
@@ -90,12 +68,38 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .build(app)?;
 
-            platform::audio_feedback::restore_volume_at_startup();
             schedule_startup_main_window_reveal(app.handle());
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::providers::load_providers,
+            commands::providers::fetch_provider_models,
+            commands::providers::test_provider_connectivity,
+            commands::providers::test_provider,
+            commands::providers::test_provider_model,
+            commands::providers::stream_test_provider_model,
+            commands::providers::upsert_provider,
+            commands::providers::remove_provider,
+            commands::providers::set_provider_enabled,
+            commands::newapi::newapi_probe_site,
+            commands::newapi::newapi_list_tokens,
+            commands::newapi::newapi_list_groups,
+            commands::newapi::newapi_list_models,
+            commands::newapi::newapi_create_token,
+            commands::newapi::newapi_site_connection_status,
+            commands::newapi::newapi_user_profile,
+            commands::newapi::newapi_login_with_password,
+            commands::newapi::newapi_verify_site_connection,
+            commands::newapi::newapi_save_site_connection,
+            commands::newapi::newapi_clear_site_connection,
+            commands::newapi::newapi_site_usage,
+            commands::newapi::newapi_wallet,
+            commands::newapi::newapi_redeem,
+            commands::newapi::newapi_keys,
+            commands::newapi::newapi_delete_token,
+            commands::newapi::newapi_set_token_status,
+            commands::newapi::newapi_logs,
             commands::mcp::load_mcp_servers,
             commands::mcp::upsert_mcp_server,
             commands::mcp::set_mcp_server_enabled,
@@ -111,40 +115,33 @@ pub fn run() {
             commands::custom_instructions::apply_custom_instruction,
             commands::custom_instructions::clear_custom_instruction_block,
             commands::custom_instructions::rollback_custom_instruction,
-            commands::system::clean,
-            commands::system::rebuild_registry,
-            commands::system::set_auto_switch,
-            commands::system::configure_auto_switch,
-            commands::system::set_api_proxy_config,
-            commands::system::test_api_proxy_config,
-            commands::system::detect_api_proxy_config,
-            commands::system::get_usage_refresh_interval,
-            commands::system::set_usage_refresh_interval,
-            commands::system::run_daemon_once,
+            commands::sessions::list_sessions,
+            commands::sessions::get_session_overview,
+            commands::sessions::get_session_detail,
+            commands::sessions::get_session_stats,
+            commands::system::load_app_state,
+            commands::system::set_check_zcode_running,
+            commands::system::is_zcode_running,
+            commands::system::load_zcode_proxy,
+            commands::system::set_zcode_proxy,
+            commands::system::restart_zcode,
             commands::system::diagnose,
-            commands::system::restart_codex,
+            commands::system::clean,
+            commands::system::get_system_info,
             commands::system::graceful_restart_for_update,
             commands::system::check_update_installability,
-            commands::system::load_bootstrap_state,
             commands::system::open_path,
-            commands::system::get_system_info,
-            commands::hotspot::has_notch,
-            commands::hotspot::get_hotspot_enabled,
-            commands::hotspot::set_hotspot_enabled,
-            commands::hotspot::focus_main_window,
-            commands::hotspot::hotspot_ready,
+            commands::dashboard::load_dashboard,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building AiMaMi");
+        .expect("error while building ZMate");
 
     let activation_watcher_guard = platform::single_instance::start_activation_watcher({
         let handle = app.handle().clone();
-        move || commands::hotspot::force_reveal_main_window(&handle)
+        move || commands::tray_menu::show_main_window(&handle)
     })
     .map_err(|error| {
-        eprintln!(
-            "[AiMaMi] failed to start single-instance activation watcher: {error}"
-        );
+        eprintln!("[ZMate] failed to start single-instance activation watcher: {error}");
         error
     })
     .ok();
@@ -160,13 +157,13 @@ pub fn run() {
 
         #[cfg(target_os = "macos")]
         if let RunEvent::Reopen { .. } = event {
-            commands::hotspot::force_reveal_main_window(_app_handle);
+            commands::tray_menu::show_main_window(_app_handle);
         }
     });
 }
 
 fn load_tray_template_icon() -> Result<Image<'static>, String> {
-    let reader = ImageReader::new(Cursor::new(include_bytes!("../../assets/women.png")))
+    let reader = image::ImageReader::new(Cursor::new(include_bytes!("../../assets/women.png")))
         .with_guessed_format()
         .map_err(|e| format!("failed to guess tray icon format: {e}"))?;
     let decoded = reader
@@ -181,6 +178,6 @@ fn schedule_startup_main_window_reveal(app: &tauri::AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(180));
-        commands::hotspot::reveal_main_window(&handle);
+        commands::tray_menu::show_main_window(&handle);
     });
 }

@@ -1,18 +1,32 @@
 export type Route =
   | "overview"
-  | "customInstructions"
+  | "providers"
+  | "apiKeys"
+  | "usageLogs"
+  | "wallet"
   | "mcp"
   | "skills"
+  | "customInstructions"
+  | "sessions"
   | "maintenance"
-  | "settings";
+  | "settings"
+  | "siteLogin"
+  | "profile";
 
 export const ALL_APP_ROUTES: Route[] = [
   "overview",
-  "customInstructions",
+  "providers",
+  "apiKeys",
+  "usageLogs",
+  "wallet",
   "mcp",
   "skills",
+  "customInstructions",
+  "sessions",
   "maintenance",
   "settings",
+  "siteLogin",
+  "profile",
 ];
 
 export function isAppRoute(value: string): value is Route {

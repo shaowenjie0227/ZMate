@@ -1,15 +1,15 @@
-use crate::core::auth::current_timestamp;
+use crate::core::models::current_timestamp;
 use crate::core::models::{
     CoreError, CustomInstructionCurrentState, CustomInstructionHistoryAction,
     CustomInstructionHistoryEntry, CustomInstructionPreviewPayload,
     CustomInstructionProtectionState, CustomInstructionStatePayload,
 };
-use crate::platform::paths::CodexPaths;
+use crate::platform::paths::ZCodePaths;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const MANAGED_START_MARKER: &str = "<!-- AIMAMI_CUSTOM_INSTRUCTIONS_START -->";
-const MANAGED_END_MARKER: &str = "<!-- AIMAMI_CUSTOM_INSTRUCTIONS_END -->";
+const MANAGED_START_MARKER: &str = "<!-- ZMATE_CUSTOM_INSTRUCTIONS_START -->";
+const MANAGED_END_MARKER: &str = "<!-- ZMATE_CUSTOM_INSTRUCTIONS_END -->";
 const HISTORY_LIMIT: usize = 10;
 
 #[derive(Debug, Clone)]
@@ -49,15 +49,15 @@ impl CustomInstructionHistorySnapshot {
     }
 }
 
-pub fn load_state(paths: &CodexPaths) -> Result<CustomInstructionStatePayload, CoreError> {
-    paths.ensure_directories()?;
+pub fn load_state(paths: &ZCodePaths) -> Result<CustomInstructionStatePayload, CoreError> {
+    paths.ensure_app_directories()?;
     let parsed = parse_global_file(paths)?;
     let history = load_history(paths)?;
     let latest = history.first().cloned();
 
     Ok(CustomInstructionStatePayload {
         current: CustomInstructionCurrentState {
-            global_path: paths.global_agents_path.display().to_string(),
+            global_path: paths.agents_md_path.display().to_string(),
             file_exists: parsed.file_exists,
             managed_block_present: parsed.managed_block_present,
             protection_state: parsed.protection_state,
@@ -72,10 +72,10 @@ pub fn load_state(paths: &CodexPaths) -> Result<CustomInstructionStatePayload, C
 }
 
 pub fn preview_apply(
-    paths: &CodexPaths,
+    paths: &ZCodePaths,
     content: &str,
 ) -> Result<CustomInstructionPreviewPayload, CoreError> {
-    paths.ensure_directories()?;
+    paths.ensure_app_directories()?;
     validate_managed_content(content)?;
     let parsed = parse_global_file(paths)?;
 
@@ -88,7 +88,7 @@ pub fn preview_apply(
     let resulting_content = compose_with_managed_content(&parsed, content)?;
 
     Ok(CustomInstructionPreviewPayload {
-        global_path: paths.global_agents_path.display().to_string(),
+        global_path: paths.agents_md_path.display().to_string(),
         protection_state: parsed.protection_state,
         issue_message: parsed.issue_message,
         current_managed_content: parsed.managed_content,
@@ -98,13 +98,13 @@ pub fn preview_apply(
 }
 
 pub fn apply_managed_content(
-    paths: &CodexPaths,
+    paths: &ZCodePaths,
     content: &str,
     template_code: Option<String>,
     template_title: Option<String>,
     source: Option<String>,
 ) -> Result<CustomInstructionStatePayload, CoreError> {
-    paths.ensure_directories()?;
+    paths.ensure_app_directories()?;
     validate_managed_content(content)?;
     let parsed = parse_global_file(paths)?;
 
@@ -127,12 +127,12 @@ pub fn apply_managed_content(
         template_title,
         parsed.raw_content,
     )?;
-    std::fs::write(&paths.global_agents_path, next_content)?;
+    std::fs::write(&paths.agents_md_path, next_content)?;
     load_state(paths)
 }
 
-pub fn clear_managed_block(paths: &CodexPaths) -> Result<CustomInstructionStatePayload, CoreError> {
-    paths.ensure_directories()?;
+pub fn clear_managed_block(paths: &ZCodePaths) -> Result<CustomInstructionStatePayload, CoreError> {
+    paths.ensure_app_directories()?;
     let parsed = parse_global_file(paths)?;
 
     if parsed.protection_state == CustomInstructionProtectionState::Protected {
@@ -159,20 +159,20 @@ pub fn clear_managed_block(paths: &CodexPaths) -> Result<CustomInstructionStateP
         parsed.raw_content,
     )?;
     if cleared.is_empty() {
-        if paths.global_agents_path.exists() {
-            std::fs::remove_file(&paths.global_agents_path)?;
+        if paths.agents_md_path.exists() {
+            std::fs::remove_file(&paths.agents_md_path)?;
         }
     } else {
-        std::fs::write(&paths.global_agents_path, cleared)?;
+        std::fs::write(&paths.agents_md_path, cleared)?;
     }
     load_state(paths)
 }
 
 pub fn rollback_history(
-    paths: &CodexPaths,
+    paths: &ZCodePaths,
     history_id: &str,
 ) -> Result<CustomInstructionStatePayload, CoreError> {
-    paths.ensure_directories()?;
+    paths.ensure_app_directories()?;
     let snapshot = find_history_snapshot(paths, history_id)?
         .ok_or_else(|| CoreError::NotFound(format!("History entry not found: {history_id}")))?;
     let parsed = parse_global_file(paths)?;
@@ -187,20 +187,20 @@ pub fn rollback_history(
     )?;
 
     if snapshot.full_content.is_empty() {
-        if paths.global_agents_path.exists() {
-            std::fs::remove_file(&paths.global_agents_path)?;
+        if paths.agents_md_path.exists() {
+            std::fs::remove_file(&paths.agents_md_path)?;
         }
     } else {
-        std::fs::write(&paths.global_agents_path, snapshot.full_content)?;
+        std::fs::write(&paths.agents_md_path, snapshot.full_content)?;
     }
 
     load_state(paths)
 }
 
-fn parse_global_file(paths: &CodexPaths) -> Result<ParsedManagedBlock, CoreError> {
-    let file_exists = paths.global_agents_path.exists();
+fn parse_global_file(paths: &ZCodePaths) -> Result<ParsedManagedBlock, CoreError> {
+    let file_exists = paths.agents_md_path.exists();
     let raw_content = if file_exists {
-        std::fs::read_to_string(&paths.global_agents_path)?
+        std::fs::read_to_string(&paths.agents_md_path)?
     } else {
         String::new()
     };
@@ -232,7 +232,7 @@ fn parse_global_file(paths: &CodexPaths) -> Result<ParsedManagedBlock, CoreError
             file_exists,
             protection_state: CustomInstructionProtectionState::Protected,
             issue_message: Some(
-                "检测到重复或不完整的 AiMaMi 自定义指令标记，请先手动修复全局 AGENTS 文件。"
+                "检测到重复或不完整的 ZMate 自定义指令标记，请先手动修复全局 AGENTS 文件。"
                     .to_string(),
             ),
             managed_block_present: false,
@@ -250,7 +250,7 @@ fn parse_global_file(paths: &CodexPaths) -> Result<ParsedManagedBlock, CoreError
             file_exists,
             protection_state: CustomInstructionProtectionState::Protected,
             issue_message: Some(
-                "AiMaMi 自定义指令标记顺序异常，请先手动修复全局 AGENTS 文件。".to_string(),
+                "ZMate 自定义指令标记顺序异常，请先手动修复全局 AGENTS 文件。".to_string(),
             ),
             managed_block_present: false,
             managed_content: String::new(),
@@ -344,14 +344,14 @@ fn normalize_managed_content(content: &str) -> String {
 fn validate_managed_content(content: &str) -> Result<(), CoreError> {
     if content.contains(MANAGED_START_MARKER) || content.contains(MANAGED_END_MARKER) {
         return Err(CoreError::InvalidData(
-            "自定义指令内容不能包含 AiMaMi 受控区块标记。".to_string(),
+            "自定义指令内容不能包含 ZMate 受控区块标记。".to_string(),
         ));
     }
     Ok(())
 }
 
 fn save_history_snapshot(
-    paths: &CodexPaths,
+    paths: &ZCodePaths,
     action: CustomInstructionHistoryAction,
     source: String,
     template_code: Option<String>,
@@ -378,7 +378,7 @@ fn save_history_snapshot(
     Ok(())
 }
 
-fn trim_history(paths: &CodexPaths) -> Result<(), CoreError> {
+fn trim_history(paths: &ZCodePaths) -> Result<(), CoreError> {
     let mut items = load_history(paths)?;
     if items.len() <= HISTORY_LIMIT {
         return Ok(());
@@ -395,7 +395,7 @@ fn trim_history(paths: &CodexPaths) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn load_history(paths: &CodexPaths) -> Result<Vec<CustomInstructionHistorySnapshot>, CoreError> {
+fn load_history(paths: &ZCodePaths) -> Result<Vec<CustomInstructionHistorySnapshot>, CoreError> {
     if !paths.custom_instruction_history_dir.exists() {
         return Ok(vec![]);
     }
@@ -417,7 +417,7 @@ fn load_history(paths: &CodexPaths) -> Result<Vec<CustomInstructionHistorySnapsh
 }
 
 fn find_history_snapshot(
-    paths: &CodexPaths,
+    paths: &ZCodePaths,
     history_id: &str,
 ) -> Result<Option<CustomInstructionHistorySnapshot>, CoreError> {
     let path = paths

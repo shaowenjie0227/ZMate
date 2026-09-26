@@ -1,9 +1,9 @@
 //! Cross-platform process-level single instance guard.
 //!
 //! This guard is intentionally acquired before Tauri setup starts so a second
-//! AiMaMi process cannot rewrite Codex config.
+//! AiMaMi process cannot rewrite ZCode config.
 
-use crate::platform::paths::CodexPaths;
+use crate::platform::paths::ZCodePaths;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,7 +60,7 @@ mod imp {
         // Local\\ is per interactive user session and avoids the extra
         // privilege requirements that Global\\ can trigger on locked-down
         // Windows machines.
-        let name: Vec<u16> = std::ffi::OsStr::new("Local\\dev.aimami.desktop.single-instance")
+        let name: Vec<u16> = std::ffi::OsStr::new("Local\\dev.zmate.desktop.single-instance")
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
@@ -101,10 +101,10 @@ mod imp {
     pub fn acquire() -> Result<SingleInstanceGuard, String> {
         let dir = dirs::data_local_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("dev.aimami.desktop");
+            .join("dev.zmate.desktop");
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("prepare single-instance lock dir failed: {e}"))?;
-        let path = dir.join("aimami-single-instance.lock");
+        let path = dir.join("zmate-single-instance.lock");
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -129,12 +129,12 @@ pub use imp::SingleInstanceGuard;
 pub use imp::SingleInstanceGuard;
 
 #[cfg(windows)]
-pub fn acquire(_paths: &CodexPaths) -> Result<SingleInstanceGuard, String> {
+pub fn acquire(_paths: &ZCodePaths) -> Result<SingleInstanceGuard, String> {
     imp::acquire()
 }
 
 #[cfg(unix)]
-pub fn acquire(_paths: &CodexPaths) -> Result<SingleInstanceGuard, String> {
+pub fn acquire(_paths: &ZCodePaths) -> Result<SingleInstanceGuard, String> {
     imp::acquire()
 }
 
@@ -169,8 +169,8 @@ pub fn request_existing_instance_activation() -> bool {
 fn activation_request_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("dev.aimami.desktop")
-        .join("aimami-activate.request")
+        .join("dev.zmate.desktop")
+        .join("zmate-activate.request")
 }
 
 fn prepare_activation_dir(path: &Path) -> Result<(), String> {

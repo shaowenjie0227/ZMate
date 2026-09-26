@@ -1,26 +1,18 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Copy, Download, Monitor, Moon, Sun, Globe } from "lucide-react";
+
 import { api } from "@/lib/api";
-import type { ApiProxyMode } from "@/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ButtonBusyContent } from "@/components/ui/button-busy-content";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
-import { toast } from "@/hooks/use-toast";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { Sun, Moon, Monitor, Globe, Download, Loader2 } from "lucide-react";
-import { BentoCard } from "@/components/ui/bento-card";
 import { Badge } from "@/components/ui/badge";
+import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
+import { BentoCard } from "@/components/ui/bento-card";
+import { toast } from "@/hooks/use-toast";
+import { useBusyAction } from "@/hooks/use-busy-action";
 import {
   ACCENT_PRESETS,
   HEATMAP_PRESETS,
@@ -28,36 +20,27 @@ import {
   type HeatmapPreset,
 } from "@/hooks/use-accent-color";
 import type { Theme } from "@/hooks/use-theme";
-const RUNTIME_STATE_DISPLAY_QUERY_KEY = ["runtime-state", "display"] as const;
-import { REFRESH_OPTIONS, type RefreshInterval } from "@/hooks/use-auto-refresh";
-import { useBusyAction } from "@/hooks/use-busy-action";
-import { isMacPlatform } from "@/lib/platform";
-import { ApiProxyDialog } from "@/components/runtime/api-proxy-dialog";
 
-type SnapshotEnvelope = Awaited<ReturnType<typeof api.loadSnapshot>>;
+const APP_STATE_QUERY_KEY = ["app-state"] as const;
+
 interface SettingsPageProps {
   theme: Theme;
-  onThemeChange: (theme: Theme) => void;
+  onThemeChange: (theme: "light" | "dark" | "system") => void;
   accent: AccentPreset;
   setAccent: (accent: AccentPreset) => void;
   heatmap: HeatmapPreset;
   setHeatmap: (heatmap: HeatmapPreset) => void;
   language: string;
   setLanguage: (lang: string) => void;
-  refreshInterval: RefreshInterval;
-  setRefreshInterval: (v: RefreshInterval) => void;
   onCheckUpdate: () => Promise<"available" | "up-to-date" | "error">;
-  onRefreshUsageStatus?: () => Promise<unknown>;
 }
 
-function proxyModeBadgeLabel(
-  t: (key: string, options?: Record<string, unknown>) => string,
-  mode: ApiProxyMode,
-) {
-  return mode === "manual"
-    ? t("settings.apiProxyModeManual")
-    : t("settings.apiProxyModeDirect");
-}
+const PATH_LABEL_KEYS: Record<string, string> = {
+  providerConfigPath: "providers.configFile",
+  cliConfigPath: "mcp.configFile",
+  skillsDir: "skills.rootPath",
+  agentsMdPath: "customInstructions.globalScopeHint",
+};
 
 export function SettingsPage({
   theme,
@@ -68,149 +51,54 @@ export function SettingsPage({
   setHeatmap,
   language,
   setLanguage,
-  refreshInterval,
-  setRefreshInterval,
   onCheckUpdate,
-  onRefreshUsageStatus,
 }: SettingsPageProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const supportsHotspot = isMacPlatform();
 
-  const statusQuery = useQuery({
-    queryKey: RUNTIME_STATE_DISPLAY_QUERY_KEY,
-    queryFn: () => api.loadSnapshot(false),
+  const stateQuery = useQuery({
+    queryKey: APP_STATE_QUERY_KEY,
+    queryFn: () => api.loadAppState(),
     staleTime: Infinity,
     refetchOnMount: false,
   });
+  const appState = stateQuery.data?.data;
 
-  const status = statusQuery.data?.data.status;
-
-  const [thresholdDialogOpen, setThresholdDialogOpen] = useState(false);
-  const [draft5h, setDraft5h] = useState(15);
-  const [draftWeekly, setDraftWeekly] = useState(10);
-  const [pendingEnable, setPendingEnable] = useState(false);
-  const [proxyDialogOpen, setProxyDialogOpen] = useState(false);
-  const updateCheckAction = useBusyAction({ minVisibleMs: 600 });
-
-  const openThresholdDialog = (enabling: boolean) => {
-    setPendingEnable(enabling);
-    setDraft5h(status?.autoSwitch.threshold5hPercent ?? 15);
-    setDraftWeekly(status?.autoSwitch.thresholdWeeklyPercent ?? 10);
-    setThresholdDialogOpen(true);
-  };
-
-  const openProxyDialog = () => {
-    setProxyDialogOpen(true);
-  };
-
-  const disableAutoSwitchMutation = useMutation({
-    mutationFn: () => api.setAutoSwitch(false),
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: RUNTIME_STATE_DISPLAY_QUERY_KEY });
-      const previous = queryClient.getQueryData<SnapshotEnvelope>(RUNTIME_STATE_DISPLAY_QUERY_KEY);
-      queryClient.setQueryData<SnapshotEnvelope>(RUNTIME_STATE_DISPLAY_QUERY_KEY, (old) => {
+  const checkRunningMutation = useMutation({
+    mutationFn: (enabled: boolean) => api.setCheckZcodeRunning(enabled),
+    onMutate: async (enabled: boolean) => {
+      await queryClient.cancelQueries({ queryKey: APP_STATE_QUERY_KEY });
+      type AppStateEnvelope = Awaited<ReturnType<typeof api.loadAppState>>;
+      const previous = queryClient.getQueryData<AppStateEnvelope>(APP_STATE_QUERY_KEY);
+      queryClient.setQueryData<AppStateEnvelope>(APP_STATE_QUERY_KEY, (old) => {
         if (!old) return old;
         return {
           ...old,
-          data: {
-            ...old.data,
-            status: {
-              ...old.data.status,
-              autoSwitch: { ...old.data.status.autoSwitch, enabled: false },
-            },
-          },
+          data: { ...old.data, settings: { ...old.data.settings, checkZcodeRunning: enabled } },
         };
       });
       return { previous };
     },
-    onError: (_err, _v, context) => {
+    onError: (_error, _enabled, context) => {
       if (context?.previous) {
-        queryClient.setQueryData(RUNTIME_STATE_DISPLAY_QUERY_KEY, context.previous);
+        queryClient.setQueryData(APP_STATE_QUERY_KEY, context.previous);
       }
-    },
-    onSuccess: () => {
       toast({
-        title: t("settings.autoSwitchDisabled"),
-        description: t("settings.autoSwitchDisabledDesc"),
-        variant: "success",
+        title: t("common.error"),
+        description: t("common.toastErrorGenericDesc"),
+        variant: "destructive",
       });
     },
   });
 
-  const saveThresholdsMutation = useMutation({
-    mutationFn: async (params: { enable: boolean; t5h: number; tWeekly: number }) => {
-      if (params.enable) await api.setAutoSwitch(true);
-      return api.configureAutoSwitch(params.t5h, params.tWeekly);
-    },
-    onSuccess: (_data, params) => {
-      setThresholdDialogOpen(false);
-      queryClient.setQueryData<SnapshotEnvelope>(RUNTIME_STATE_DISPLAY_QUERY_KEY, (old) => {
-        if (!old) return old;
-        return {
-          ...old,
-          data: {
-            ...old.data,
-            status: {
-              ...old.data.status,
-              autoSwitch: {
-                ...old.data.status.autoSwitch,
-                enabled: true,
-                threshold5hPercent: params.t5h,
-                thresholdWeeklyPercent: params.tWeekly,
-              },
-            },
-          },
-        };
-      });
-      toast({
-        title: params.enable ? t("settings.autoSwitchEnabled") : t("settings.thresholdSavedTitle"),
-        description: params.enable
-          ? t("settings.autoSwitchEnabledDesc")
-          : t("settings.thresholdSavedDesc"),
-        variant: "success",
-      });
-    },
-  });
-
-  const notchQuery = useQuery({
-    queryKey: ["has-notch"],
-    queryFn: () => api.hasNotch(),
-    staleTime: Infinity,
-    enabled: supportsHotspot,
-  });
-
-  const hasNotch = notchQuery.data ?? false;
-
-  const hotspotQuery = useQuery({
-    queryKey: ["hotspot-enabled"],
-    queryFn: () => api.getHotspotEnabled(),
-    enabled: supportsHotspot && hasNotch,
-  });
-
-  const hotspotMutation = useMutation({
-    mutationFn: (enabled: boolean) => api.setHotspotEnabled(enabled),
-    onSuccess: (_data, enabled) => {
-      queryClient.invalidateQueries({ queryKey: ["hotspot-enabled"] });
-      toast({
-        title: enabled ? t("settings.hotspotEnabled") : t("settings.hotspotDisabled"),
-        description: enabled ? t("settings.hotspotEnabledDesc") : t("settings.hotspotDisabledDesc"),
-        variant: "success",
-      });
-    },
-  });
-
+  const updateCheckAction = useBusyAction({ minVisibleMs: 600 });
   const checkingUpdate = updateCheckAction.busy;
   const handleCheckUpdate = async () => {
     await updateCheckAction.run(async () => {
       try {
         const result = await onCheckUpdate();
         if (result === "up-to-date") {
-          toast({
-            title: t("settings.upToDate"),
-            description: t("settings.upToDateDesc"),
-            variant: "default",
-          });
+          toast({ title: t("settings.upToDate"), description: t("settings.upToDateDesc") });
         } else if (result === "error") {
           toast({
             title: t("settings.updateCheckFailed"),
@@ -236,7 +124,10 @@ export function SettingsPage({
       .catch(() => setAppVersion("unknown"));
   }, []);
 
-  const currentProxy = status?.api.proxy ?? { mode: "direct" as ApiProxyMode, url: null };
+  const copyPath = async (path: string) => {
+    await navigator.clipboard.writeText(path);
+    toast({ title: t("common.toastCopiedDesc"), variant: "success" });
+  };
 
   return (
     <div className="space-y-8">
@@ -249,7 +140,7 @@ export function SettingsPage({
               { value: "system", icon: Monitor, label: t("settings.system") },
             ]}
             value={theme}
-            onChange={(v) => onThemeChange(v as Theme)}
+            onChange={(v) => onThemeChange(v as "light" | "dark" | "system")}
           />
         </SettingRow>
 
@@ -297,87 +188,63 @@ export function SettingsPage({
             ))}
           </div>
         </SettingRow>
-
-        {supportsHotspot && (
-          <SettingRow
-            label={t("settings.hotspot")}
-            description={hasNotch ? t("settings.hotspotDesc") : t("settings.hotspotNotSupported")}
-          >
-            <Switch
-              checked={hasNotch && (hotspotQuery.data ?? false)}
-              onCheckedChange={(v) => hotspotMutation.mutate(v)}
-              disabled={!hasNotch || hotspotMutation.isPending}
-            />
-          </SettingRow>
-        )}
-
       </Section>
 
-      <Section title={t("settings.modeSwitch")}>
-        <div className="flex items-center justify-between px-5 py-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[13px] font-medium">{t("settings.autoSwitch")}</span>
-              {status?.autoSwitch.enabled && (
+      <Section title={t("settings.behavior")}>
+        <SettingRow
+          label={t("settings.checkZcodeRunning")}
+          description={t("settings.checkZcodeRunningDesc")}
+        >
+          <Switch
+            checked={appState?.settings.checkZcodeRunning ?? true}
+            onCheckedChange={(v) => checkRunningMutation.mutate(v)}
+            disabled={checkRunningMutation.isPending}
+          />
+        </SettingRow>
+        {appState && (
+          <SettingRow
+            label={
+              <div className="flex items-center gap-2">
+                <span>{t("maintenance.diagnose")}</span>
                 <Badge
                   variant="secondary"
-                  className="cursor-pointer text-[11px] font-normal hover:bg-secondary/60"
-                  onClick={() => openThresholdDialog(false)}
+                  className={cn(
+                    "text-[11px] font-normal",
+                    appState.zcodeRunning && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400",
+                  )}
                 >
-                  5h ≤{status.autoSwitch.threshold5hPercent ?? 15}% · 1w ≤{status.autoSwitch.thresholdWeeklyPercent ?? 10}%
+                  {appState.zcodeRunning ? t("maintenance.zcodeRunning") : t("maintenance.zcodeNotRunning")}
                 </Badge>
-              )}
-            </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">{t("settings.autoSwitchDesc")}</p>
-          </div>
-          <Switch
-            checked={status?.autoSwitch.enabled ?? false}
-            onCheckedChange={(v) => {
-              if (v) {
-                openThresholdDialog(true);
-              } else {
-                disableAutoSwitchMutation.mutate();
-              }
-            }}
-            disabled={disableAutoSwitchMutation.isPending || saveThresholdsMutation.isPending}
-          />
-        </div>
-        <SettingRow
-          label={t("settings.refreshInterval")}
-          description={t("settings.refreshIntervalDesc")}
-        >
-          <SettingSegmentedControl
-            items={REFRESH_OPTIONS.map(({ value, labelKey }) => ({
-              value,
-              label: t(labelKey),
-            }))}
-            value={refreshInterval}
-            onChange={(v) => setRefreshInterval(v as RefreshInterval)}
-            compact
-          />
-        </SettingRow>
-        <SettingRow
-          label={
-            <div className="flex items-center gap-2">
-              <span>{t("settings.apiProxy")}</span>
-              <Badge variant="secondary" className="text-[11px] font-normal">
-                {proxyModeBadgeLabel(t, currentProxy.mode)}
-              </Badge>
-            </div>
-          }
-          description={t("settings.apiProxyDesc")}
-        >
-          <Button variant="outline" size="sm" onClick={openProxyDialog}>
-            {t("common.edit")}
-          </Button>
-        </SettingRow>
+              </div>
+            }
+          >
+            <span />
+          </SettingRow>
+        )}
+        {appState &&
+          (
+            [
+              ["providerConfigPath", PATH_LABEL_KEYS.providerConfigPath],
+              ["cliConfigPath", PATH_LABEL_KEYS.cliConfigPath],
+              ["skillsDir", PATH_LABEL_KEYS.skillsDir],
+              ["agentsMdPath", PATH_LABEL_KEYS.agentsMdPath],
+            ] as const
+          ).map(([key, labelKey]) => (
+            <SettingRow
+              key={key}
+              label={t(labelKey)}
+              description={appState[key]}
+            >
+              <Button variant="ghost" size="icon-sm" onClick={() => void copyPath(appState[key])}>
+                <Copy />
+              </Button>
+            </SettingRow>
+          ))}
       </Section>
 
       <Section title={t("settings.about")}>
         <SettingRow label={t("settings.version")}>
-          <span className=" text-sm text-muted-foreground">
-            {appVersion}
-          </span>
+          <span className="text-sm text-muted-foreground">{appVersion}</span>
         </SettingRow>
         <SettingRow label={t("settings.checkUpdate")}>
           <Button
@@ -396,70 +263,6 @@ export function SettingsPage({
           </Button>
         </SettingRow>
       </Section>
-
-      <Dialog open={thresholdDialogOpen} onOpenChange={setThresholdDialogOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>{t("settings.thresholdDialogTitle")}</DialogTitle>
-            <DialogDescription>{t("settings.thresholdDialogDesc")}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div className="flex items-center justify-between">
-              <span className="text-sm">{t("settings.threshold5h")}</span>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={draft5h}
-                  onChange={(e) => setDraft5h(Number(e.target.value))}
-                  className="h-8 w-20 rounded-[8px] text-right text-xs"
-                />
-                <span className="text-sm text-muted-foreground">%</span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm">{t("settings.thresholdWeekly")}</span>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={draftWeekly}
-                  onChange={(e) => setDraftWeekly(Number(e.target.value))}
-                  className="h-8 w-20 rounded-[8px] text-right text-xs"
-                />
-                <span className="text-sm text-muted-foreground">%</span>
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setThresholdDialogOpen(false)}>
-              {t("common.cancel")}
-            </Button>
-            <Button
-              onClick={() =>
-                saveThresholdsMutation.mutate({
-                  enable: pendingEnable,
-                  t5h: draft5h,
-                  tWeekly: draftWeekly,
-                })
-              }
-              disabled={saveThresholdsMutation.isPending}
-            >
-              {saveThresholdsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              {t("common.save")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <ApiProxyDialog
-        open={proxyDialogOpen}
-        onOpenChange={setProxyDialogOpen}
-        currentProxy={currentProxy}
-        onSaved={() => onRefreshUsageStatus?.()}
-      />
     </div>
   );
 }
@@ -492,10 +295,10 @@ function SettingRow({
 }) {
   return (
     <div className="flex items-center justify-between px-5 py-4">
-      <div>
+      <div className="min-w-0">
         <span className="text-[13px] font-medium">{label}</span>
         {description && (
-          <div className="mt-0.5 text-xs text-muted-foreground">{description}</div>
+          <div className="mt-0.5 break-all text-xs text-muted-foreground">{description}</div>
         )}
       </div>
       {children}

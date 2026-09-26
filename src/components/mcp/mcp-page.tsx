@@ -346,16 +346,18 @@ function McpEditorDialog({
         const idx = line.indexOf(":");
         if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
       });
-      return api.upsertMcpServer({
+      return api.upsertMcpServer(
         name,
         transport,
-        enabled: true,
-        command: transport === "stdio" ? command : undefined,
-        args: transport === "stdio" ? args.split(",").map((s) => s.trim()).filter(Boolean) : [],
-        url: transport !== "stdio" ? url : undefined,
-        headers,
-        environment,
-      });
+        server?.enabled ?? true,
+        {
+          command: transport === "stdio" ? command : undefined,
+          args: transport === "stdio" ? args.split(",").map((s) => s.trim()).filter(Boolean) : [],
+          url: transport !== "stdio" ? url : undefined,
+          headers,
+          environment,
+        },
+      );
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });

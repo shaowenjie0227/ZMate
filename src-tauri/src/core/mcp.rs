@@ -1,649 +1,355 @@
-use crate::core::models::*;
+//! ZCode MCP 管理：读写 `~/.zcode/cli/config.json` 的 `mcp.servers`。
+//!
+//! 该文件是 ZCode CLI 的用户配置，还承载 hooks / plugins 等其他配置，
+//! 因此采用 serde_json::Value 打补丁的方式只动 `mcp.servers`，其余内容
+//! 语义不变（未知字段全部保留）。
+//!
+//! servers 形状（引擎 zod schema，已验证）：record<名称, 条目>：
+//! - stdio:  { "type": "stdio", "command": string, "args"?: string[], "cwd"?: string, "env"?: record<string,string>, "enabled"?: bool, "timeoutMs"?: number }
+//! - http/sse: { "type": "http"|"sse", "url": string, "headers"?: record<string,string>, "enabled"?: bool, ... }
+
+use crate::core::models::{
+    current_timestamp, CoreError, McpServerListPayload, McpServerMutationPayload,
+    McpServerRemovePayload, McpServerSummary, McpTransport,
+};
+use crate::platform::paths::ZCodePaths;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 
-const MANAGED_BLOCK_BEGIN_PREFIX: &str = "# --- AiMaMi Managed";
-const MANAGED_BLOCK_END_SUFFIX: &str = "# --- End AiMaMi Managed";
-
-fn is_managed_block_begin(line: &str) -> bool {
-    line.starts_with(MANAGED_BLOCK_BEGIN_PREFIX)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerInput {
+    pub name: String,
+    pub transport: McpTransport,
+    pub enabled: bool,
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub environment: HashMap<String, String>,
 }
 
-fn is_managed_block_end(line: &str) -> bool {
-    line.starts_with(MANAGED_BLOCK_END_SUFFIX)
-}
+const MAX_CONFIG_BACKUPS: usize = 10;
 
-const BOTTOM_MANAGED_BLOCK_BEGIN: &str = "# --- AiMaMi Managed Block (bottom) ---";
-const LEGACY_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- AiMaMi Managed Block (top) ---";
-const ROUTER_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- AiMaMi Managed Block (router-top) ---";
+// ---------------------------------------------------------------------------
+// 读取
+// ---------------------------------------------------------------------------
 
-pub fn load_mcp_servers(config_path: &Path) -> Result<Vec<McpServerSummary>, CoreError> {
-    if !config_path.exists() {
-        return Ok(vec![]);
+pub fn load_mcp_servers(paths: &ZCodePaths) -> Result<McpServerListPayload, CoreError> {
+    let (config, exists) = read_config(paths)?;
+    let source_path = paths.cli_config_path.to_string_lossy().to_string();
+
+    let mut items = Vec::new();
+    if let Some(servers) = config.pointer("/mcp/servers").and_then(Value::as_object) {
+        for (name, entry) in servers {
+            items.push(entry_to_summary(name, entry, &source_path));
+        }
     }
-    let text = std::fs::read_to_string(config_path)?;
-    Ok(parse_mcp_servers(&text, &config_path.display().to_string()))
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(McpServerListPayload {
+        total: items.len() as i32,
+        items,
+        source_path: if exists {
+            source_path
+        } else {
+            format!("{source_path}（尚未创建，保存时自动创建）")
+        },
+        last_scan_at: current_timestamp(),
+    })
 }
+
+fn read_config(paths: &ZCodePaths) -> Result<(Value, bool), CoreError> {
+    match fs::read_to_string(&paths.cli_config_path) {
+        Ok(text) => {
+            let value: Value = serde_json::from_str(&text)
+                .map_err(|e| CoreError::InvalidData(format!("cli/config.json 解析失败：{e}")))?;
+            Ok((value, true))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((json!({}), false)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn entry_to_summary(name: &str, entry: &Value, source_path: &str) -> McpServerSummary {
+    let transport = match entry.get("type").and_then(Value::as_str) {
+        Some("stdio") => McpTransport::Stdio,
+        Some("http") => McpTransport::Http,
+        Some("sse") => McpTransport::Sse,
+        _ => McpTransport::Unknown,
+    };
+    McpServerSummary {
+        name: name.to_string(),
+        transport,
+        enabled: entry.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+        source_path: source_path.to_string(),
+        command: entry
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        args: entry
+            .get("args")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        url: entry.get("url").and_then(Value::as_str).map(str::to_string),
+        headers: record_to_map(entry.get("headers")),
+        environment: record_to_map(entry.get("env")),
+    }
+}
+
+fn record_to_map(value: Option<&Value>) -> HashMap<String, String> {
+    value
+        .and_then(Value::as_object)
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// 写入（全部走「读 Value → 打补丁 → 备份 → 原子写」）
+// ---------------------------------------------------------------------------
 
 pub fn upsert_mcp_server(
-    config_path: &Path,
-    server: &McpServerSummary,
-) -> Result<McpServerSummary, CoreError> {
-    write_mcp_server(config_path, server)?;
-    let servers = load_mcp_servers(config_path)?;
-    Ok(servers
-        .into_iter()
-        .find(|s| s.name == server.name)
-        .unwrap_or_else(|| server.clone()))
-}
-
-pub fn set_mcp_server_enabled(
-    config_path: &Path,
-    name: &str,
-    enabled: bool,
-) -> Result<McpServerSummary, CoreError> {
-    let servers = load_mcp_servers(config_path)?;
-    let current = servers
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| CoreError::NotFound(format!("MCP server not found: {name}")))?;
-    let mut updated = current.clone();
-    updated.enabled = enabled;
-    upsert_mcp_server(config_path, &updated)
-}
-
-pub fn remove_mcp_server(config_path: &Path, name: &str) -> Result<(), CoreError> {
-    let original = load_config_text(config_path)?;
-    let document = parse_mcp_document(&original);
-    let block = document
-        .blocks
-        .get(name)
-        .ok_or_else(|| CoreError::NotFound(format!("MCP server not found: {name}")))?;
-    let mut lines = document.lines.clone();
-    lines.drain(block.start..block.end);
-    // Remove trailing empty lines
-    while lines.len() >= 2
-        && lines.last().map_or(false, |l| l.trim().is_empty())
-        && lines[lines.len() - 2].trim().is_empty()
-    {
-        lines.pop();
+    paths: &ZCodePaths,
+    input: McpServerInput,
+) -> Result<McpServerMutationPayload, CoreError> {
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err(CoreError::InvalidData("MCP 名称不能为空".into()));
     }
-    save_config_text(config_path, &lines.join("\n"))?;
-    Ok(())
-}
-
-
-fn write_mcp_server(config_path: &Path, server: &McpServerSummary) -> Result<(), CoreError> {
-    let original = load_config_text(config_path)?;
-    let document = parse_mcp_document(&original);
-    let rendered = render_mcp_block(server);
-
-    let updated = if let Some(existing) = document.blocks.get(&server.name) {
-        if should_relocate_mcp_block(&document.lines, existing) {
-            let mut lines = document.lines.clone();
-            lines.drain(existing.start..existing.end);
-            insert_mcp_block(lines, rendered)
-        } else {
-            let mut lines = document.lines.clone();
-            lines.splice(existing.start..existing.end, rendered);
-            lines
-        }
-    } else {
-        insert_mcp_block(document.lines.clone(), rendered)
-    };
-
-    save_config_text(config_path, &updated.join("\n"))?;
-    Ok(())
-}
-
-fn insert_mcp_block(mut lines: Vec<String>, rendered: Vec<String>) -> Vec<String> {
-    let mut insert_pos = find_mcp_insert_pos(&lines);
-
-    // 移除插入点之前的尾部空行，避免反复新增 MCP 后空行膨胀。
-    while insert_pos > 0
-        && lines
-            .get(insert_pos - 1)
-            .map_or(false, |l| l.trim().is_empty())
-    {
-        lines.remove(insert_pos - 1);
-        insert_pos -= 1;
-    }
-
-    if insert_pos > 0 {
-        lines.insert(insert_pos, String::new());
-        insert_pos += 1;
-    }
-    lines.splice(insert_pos..insert_pos, rendered);
-    lines
-}
-
-fn find_mcp_insert_pos(lines: &[String]) -> usize {
-    lines
-        .iter()
-        .position(|line| line.trim() == BOTTOM_MANAGED_BLOCK_BEGIN)
-        .unwrap_or(lines.len())
-}
-
-fn should_relocate_mcp_block(lines: &[String], block: &McpBlock) -> bool {
-    is_inside_managed_block(lines, block.start) || is_before_top_managed_block(lines, block.start)
-}
-
-fn is_before_top_managed_block(lines: &[String], index: usize) -> bool {
-    lines
-        .iter()
-        .position(|line| {
-            let trimmed = line.trim();
-            trimmed == LEGACY_TOP_MANAGED_BLOCK_BEGIN || trimmed == ROUTER_TOP_MANAGED_BLOCK_BEGIN
-        })
-        .map_or(false, |top_start| index < top_start)
-}
-
-fn is_inside_managed_block(lines: &[String], index: usize) -> bool {
-    let mut inside = false;
-    for (i, line) in lines.iter().enumerate() {
-        if i == index {
-            return inside;
-        }
-        let trimmed = line.trim();
-        if is_managed_block_begin(trimmed) {
-            inside = true;
-            continue;
-        }
-        if is_managed_block_end(trimmed) {
-            inside = false;
-        }
-    }
-    false
-}
-
-fn render_mcp_block(server: &McpServerSummary) -> Vec<String> {
-    let header = quote_toml(&server.name);
-    let mut lines = vec![format!("[mcp_servers.{header}]")];
-    lines.push(format!(
-        "enabled = {}",
-        if server.enabled { "true" } else { "false" }
-    ));
-    let transport_str = match server.transport {
-        McpTransport::Stdio => "stdio",
-        McpTransport::Http => "http",
-        McpTransport::Sse => "sse",
-        McpTransport::Unknown => "stdio",
-    };
-    lines.push(format!("transport = {}", quote_toml(transport_str)));
-
-    match server.transport {
-        McpTransport::Stdio | McpTransport::Unknown => {
-            if let Some(ref cmd) = server.command {
-                if !cmd.trim().is_empty() {
-                    lines.push(format!("command = {}", quote_toml(cmd)));
-                }
-            }
-            if !server.args.is_empty() {
-                let args_str = server
-                    .args
-                    .iter()
-                    .map(|a| quote_toml(a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                lines.push(format!("args = [{args_str}]"));
+    match input.transport {
+        McpTransport::Stdio => {
+            if input.command.as_deref().unwrap_or("").trim().is_empty() {
+                return Err(CoreError::InvalidData("stdio 类型必须填写 command".into()));
             }
         }
         McpTransport::Http | McpTransport::Sse => {
-            if let Some(ref url) = server.url {
-                if !url.trim().is_empty() {
-                    lines.push(format!("url = {}", quote_toml(url)));
-                }
+            if input.url.as_deref().unwrap_or("").trim().is_empty() {
+                return Err(CoreError::InvalidData("http/sse 类型必须填写 url".into()));
             }
         }
-    }
-
-    if !server.environment.is_empty() {
-        lines.push(String::new());
-        lines.push(format!("[mcp_servers.{header}.env]"));
-        let mut keys: Vec<&String> = server.environment.keys().collect();
-        keys.sort();
-        for key in keys {
-            let value = server
-                .environment
-                .get(key)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            lines.push(format!("{key} = {}", quote_toml(value)));
+        McpTransport::Unknown => {
+            return Err(CoreError::InvalidData("未知的 transport 类型".into()));
         }
     }
 
-    if !server.headers.is_empty() {
-        lines.push(String::new());
-        lines.push(format!("[mcp_servers.{header}.headers]"));
-        let mut keys: Vec<&String> = server.headers.keys().collect();
-        keys.sort();
-        for key in keys {
-            let value = server.headers.get(key).map(|s| s.as_str()).unwrap_or("");
-            lines.push(format!("{key} = {}", quote_toml(value)));
-        }
-    }
+    let (mut config, _) = read_config(paths)?;
 
-    lines
-}
+    let (summary, total) = {
+        let servers = ensure_servers(&mut config)?;
+        let existing = servers.get(&name).cloned();
+        let new_type = transport_type_str(&input.transport);
 
-fn quote_toml(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
-}
+        // 类型不变时保留未知字段（oauth / timeoutMs / cwd 等）；类型切换则整体重建。
+        let mut entry = match &existing {
+            Some(prev) if prev.get("type").and_then(Value::as_str) == Some(new_type) => prev.clone(),
+            _ => json!({ "type": new_type }),
+        };
 
-struct McpDocument {
-    lines: Vec<String>,
-    blocks: HashMap<String, McpBlock>,
-}
-
-struct McpBlock {
-    start: usize,
-    end: usize,
-}
-
-fn parse_mcp_document(text: &str) -> McpDocument {
-    let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
-    let mut blocks: HashMap<String, McpBlock> = HashMap::new();
-    let mut current_name: Option<String> = None;
-    let mut current_start: Option<usize> = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = strip_toml_comment(line).trim().to_string();
-        if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
-            continue;
-        }
-        let header = &trimmed[1..trimmed.len() - 1];
-        let section = parse_mcp_section_header(header);
-
-        if let (Some(ref name), Some(start)) = (&current_name, current_start) {
-            let continues = section.as_ref().map_or(false, |(sn, _)| sn == name);
-            if !continues {
-                blocks.insert(name.clone(), McpBlock { start, end: i });
-                current_name = None;
-                current_start = None;
+        entry["enabled"] = Value::Bool(input.enabled);
+        match input.transport {
+            McpTransport::Stdio => {
+                entry["command"] = Value::String(input.command.clone().unwrap_or_default());
+                apply_optional(&mut entry, "args", string_slice(&input.args));
+                apply_optional(&mut entry, "env", map_value(&input.environment));
             }
-        }
-
-        if let Some((server_name, _)) = section {
-            if current_name.is_none() {
-                current_name = Some(server_name);
-                current_start = Some(i);
+            McpTransport::Http | McpTransport::Sse => {
+                entry["url"] = Value::String(input.url.clone().unwrap_or_default());
+                apply_optional(&mut entry, "headers", map_value(&input.headers));
             }
+            McpTransport::Unknown => unreachable!("已在入口校验"),
         }
-    }
 
-    if let (Some(name), Some(start)) = (current_name, current_start) {
-        blocks.insert(
-            name,
-            McpBlock {
-                start,
-                end: lines.len(),
-            },
+        servers.insert(name.clone(), entry);
+        let total = servers.len() as i32;
+        let summary = entry_to_summary(
+            &name,
+            servers.get(&name).expect("刚写入"),
+            &paths.cli_config_path.to_string_lossy(),
         );
-    }
-
-    McpDocument { lines, blocks }
-}
-
-fn parse_mcp_section_header(header: &str) -> Option<(String, Option<String>)> {
-    let stripped = header.strip_prefix("mcp_servers.")?;
-    if stripped.is_empty() {
-        return None;
-    }
-
-    if stripped.starts_with('"') {
-        let mut name = String::new();
-        let mut escaped = false;
-        for ch in stripped[1..].chars() {
-            if escaped {
-                name.push(ch);
-                escaped = false;
-                continue;
-            }
-            if ch == '\\' {
-                escaped = true;
-                continue;
-            }
-            if ch == '"' {
-                let rest = &stripped[name.len() + 2..];
-                let sub = if rest.starts_with('.') {
-                    Some(rest[1..].to_string())
-                } else {
-                    None
-                };
-                return Some((name, sub));
-            }
-            name.push(ch);
-        }
-        return None;
-    }
-
-    let parts: Vec<&str> = stripped.splitn(2, '.').collect();
-    let name = parts[0].to_string();
-    if name.is_empty() {
-        return None;
-    }
-    let sub = parts.get(1).map(|s| s.to_string());
-    Some((name, sub))
-}
-
-fn strip_toml_comment(line: &str) -> &str {
-    let mut in_quotes = false;
-    let mut escaped = false;
-    for (i, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' {
-            in_quotes = !in_quotes;
-            continue;
-        }
-        if ch == '#' && !in_quotes {
-            return &line[..i];
-        }
-    }
-    line
-}
-
-fn parse_mcp_servers(text: &str, source_path: &str) -> Vec<McpServerSummary> {
-    struct Builder {
-        name: String,
-        transport: McpTransport,
-        enabled: bool,
-        command: Option<String>,
-        args: Vec<String>,
-        url: Option<String>,
-        headers: HashMap<String, String>,
-        environment: HashMap<String, String>,
-    }
-
-    let mut builders: HashMap<String, Builder> = HashMap::new();
-    let mut current_server: Option<String> = None;
-    let mut current_subsection: Option<String> = None;
-
-    for line in text.lines() {
-        let trimmed = strip_toml_comment(line).trim().to_string();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            let header = &trimmed[1..trimmed.len() - 1];
-            if let Some((name, sub)) = parse_mcp_section_header(header) {
-                current_server = Some(name.clone());
-                current_subsection = sub;
-                builders.entry(name.clone()).or_insert(Builder {
-                    name,
-                    transport: McpTransport::Unknown,
-                    enabled: true,
-                    command: None,
-                    args: vec![],
-                    url: None,
-                    headers: HashMap::new(),
-                    environment: HashMap::new(),
-                });
-            } else {
-                current_server = None;
-                current_subsection = None;
-            }
-            continue;
-        }
-
-        let Some(ref server_name) = current_server else {
-            continue;
-        };
-        let Some(eq_pos) = trimmed.find('=') else {
-            continue;
-        };
-        let key = trimmed[..eq_pos].trim();
-        let value = trimmed[eq_pos + 1..].trim();
-        let Some(builder) = builders.get_mut(server_name) else {
-            continue;
-        };
-
-        match current_subsection.as_deref() {
-            None => match key {
-                "transport" | "type" => {
-                    builder.transport = match unquote_toml(value).to_lowercase().as_str() {
-                        "stdio" => McpTransport::Stdio,
-                        "http" => McpTransport::Http,
-                        "sse" => McpTransport::Sse,
-                        _ => McpTransport::Unknown,
-                    };
-                }
-                "command" => {
-                    builder.command = Some(unquote_toml(value));
-                    if matches!(builder.transport, McpTransport::Unknown) {
-                        builder.transport = McpTransport::Stdio;
-                    }
-                }
-                "args" => {
-                    builder.args = parse_toml_array(value);
-                    if matches!(builder.transport, McpTransport::Unknown)
-                        && !builder.args.is_empty()
-                    {
-                        builder.transport = McpTransport::Stdio;
-                    }
-                }
-                "url" => {
-                    let u = unquote_toml(value);
-                    if matches!(builder.transport, McpTransport::Unknown) {
-                        builder.transport = if u.to_lowercase().contains("sse") {
-                            McpTransport::Sse
-                        } else {
-                            McpTransport::Http
-                        };
-                    }
-                    builder.url = Some(u);
-                }
-                "enabled" => builder.enabled = value.to_lowercase() == "true",
-                _ => {}
-            },
-            Some("env") => {
-                builder
-                    .environment
-                    .insert(key.to_string(), unquote_toml(value));
-            }
-            Some("headers") => {
-                builder.headers.insert(key.to_string(), unquote_toml(value));
-            }
-            _ => {}
-        }
-    }
-
-    let mut servers: Vec<McpServerSummary> = builders
-        .into_values()
-        .map(|b| McpServerSummary {
-            name: b.name,
-            transport: b.transport,
-            enabled: b.enabled,
-            source_path: source_path.to_string(),
-            command: b.command,
-            args: b.args,
-            url: b.url,
-            headers: b.headers,
-            environment: b.environment,
-        })
-        .collect();
-    servers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    servers
-}
-
-fn unquote_toml(value: &str) -> String {
-    let t = value.trim();
-    if t.len() >= 2
-        && ((t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')))
-    {
-        t[1..t.len() - 1].to_string()
-    } else {
-        t.to_string()
-    }
-}
-
-fn parse_toml_array(value: &str) -> Vec<String> {
-    let t = value.trim();
-    if !(t.starts_with('[') && t.ends_with(']')) {
-        return vec![];
-    }
-    let inner = &t[1..t.len() - 1];
-    let mut items = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let mut escaped = false;
-    for ch in inner.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' {
-            in_quotes = !in_quotes;
-            continue;
-        }
-        if ch == ',' && !in_quotes {
-            let v = current.trim().to_string();
-            if !v.is_empty() {
-                items.push(v);
-            }
-            current.clear();
-            continue;
-        }
-        current.push(ch);
-    }
-    let trailing = current.trim().to_string();
-    if !trailing.is_empty() {
-        items.push(trailing);
-    }
-    items
-}
-
-fn load_config_text(path: &Path) -> Result<String, CoreError> {
-    if !path.exists() {
-        return Ok(String::new());
-    }
-    Ok(std::fs::read_to_string(path)?)
-}
-
-fn save_config_text(path: &Path, text: &str) -> Result<(), CoreError> {
-    let normalized = if text.is_empty() || text.ends_with('\n') {
-        text.to_string()
-    } else {
-        format!("{text}\n")
+        (summary, total)
     };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    backup_and_write(paths, &config)?;
+
+    Ok(McpServerMutationPayload {
+        server: summary,
+        total,
+        source_path: paths.cli_config_path.to_string_lossy().to_string(),
+    })
+}
+
+pub fn set_mcp_server_enabled(
+    paths: &ZCodePaths,
+    name: &str,
+    enabled: bool,
+) -> Result<McpServerMutationPayload, CoreError> {
+    let (mut config, _) = read_config(paths)?;
+
+    let (summary, total) = {
+        let servers = ensure_servers(&mut config)?;
+        let entry = servers
+            .get_mut(name)
+            .ok_or_else(|| CoreError::NotFound(format!("MCP server 不存在：{name}")))?;
+        entry["enabled"] = Value::Bool(enabled);
+        let total = servers.len() as i32;
+        let summary = entry_to_summary(
+            name,
+            servers.get(name).expect("刚写入"),
+            &paths.cli_config_path.to_string_lossy(),
+        );
+        (summary, total)
+    };
+    backup_and_write(paths, &config)?;
+
+    Ok(McpServerMutationPayload {
+        server: summary,
+        total,
+        source_path: paths.cli_config_path.to_string_lossy().to_string(),
+    })
+}
+
+pub fn remove_mcp_server(
+    paths: &ZCodePaths,
+    name: &str,
+) -> Result<McpServerRemovePayload, CoreError> {
+    let (mut config, _) = read_config(paths)?;
+    let servers = ensure_servers(&mut config)?;
+    if servers.remove(name).is_none() {
+        return Err(CoreError::NotFound(format!("MCP server 不存在：{name}")));
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, normalized.as_bytes())?;
-    std::fs::rename(&tmp, path)?;
+    let total = servers.len() as i32;
+    backup_and_write(paths, &config)?;
+    Ok(McpServerRemovePayload {
+        removed_name: name.to_string(),
+        total,
+        source_path: paths.cli_config_path.to_string_lossy().to_string(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+fn ensure_servers(config: &mut Value) -> Result<&mut Map<String, Value>, CoreError> {
+    if config.get("mcp").is_none() {
+        config["mcp"] = json!({});
+    }
+    if !config["mcp"].is_object() {
+        return Err(CoreError::InvalidData(
+            "cli/config.json 的 mcp 字段不是对象，拒绝修改".into(),
+        ));
+    }
+    if config["mcp"].get("servers").is_none() {
+        config["mcp"]["servers"] = json!({});
+    }
+    if !config["mcp"]["servers"].is_object() {
+        return Err(CoreError::InvalidData(
+            "cli/config.json 的 mcp.servers 不是对象，拒绝修改".into(),
+        ));
+    }
+    Ok(config["mcp"]["servers"]
+        .as_object_mut()
+        .expect("已校验为对象"))
+}
+
+fn transport_type_str(transport: &McpTransport) -> &'static str {
+    match transport {
+        McpTransport::Stdio => "stdio",
+        McpTransport::Http => "http",
+        McpTransport::Sse => "sse",
+        McpTransport::Unknown => "unknown",
+    }
+}
+
+/// 空数组/空对象不写入，保持 schema 简洁；已存在的键若新值为空则移除。
+fn apply_optional(entry: &mut Value, key: &str, value: Option<Value>) {
+    match value {
+        Some(v) if !is_empty_value(&v) => entry[key] = v,
+        _ => {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.remove(key);
+            }
+        }
+    }
+}
+
+fn is_empty_value(value: &Value) -> bool {
+    match value {
+        Value::Array(a) => a.is_empty(),
+        Value::Object(o) => o.is_empty(),
+        Value::Null => true,
+        Value::String(s) => s.is_empty(),
+        _ => false,
+    }
+}
+
+fn string_slice(items: &[String]) -> Option<Value> {
+    if items.is_empty() {
+        None
+    } else {
+        Some(json!(items))
+    }
+}
+
+fn map_value(map: &HashMap<String, String>) -> Option<Value> {
+    if map.is_empty() {
+        None
+    } else {
+        Some(json!(map))
+    }
+}
+
+fn backup_and_write(paths: &ZCodePaths, config: &Value) -> Result<(), CoreError> {
+    if paths.cli_config_path.exists() {
+        let backups_dir = paths.app_data_dir.join("backups/cli-config");
+        fs::create_dir_all(&backups_dir)?;
+        let backup_name = format!(
+            "{}-{}.json",
+            current_timestamp(),
+            uuid::Uuid::new_v4().simple()
+        );
+        fs::copy(&paths.cli_config_path, backups_dir.join(backup_name))?;
+        prune_backups(&backups_dir, MAX_CONFIG_BACKUPS);
+    }
+
+    if let Some(parent) = paths.cli_config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = paths.cli_config_path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_string_pretty(config)?)?;
+    fs::rename(&tmp, &paths.cli_config_path)?;
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    const BOTTOM_MANAGED_BLOCK_END: &str = "# --- End AiMaMi Managed Block (bottom) ---";
-    const ROUTER_TOP_MANAGED_BLOCK_END: &str = "# --- End AiMaMi Managed Block (router-top) ---";
-
-    fn stdio_server(name: &str) -> McpServerSummary {
-        McpServerSummary {
-            name: name.into(),
-            transport: McpTransport::Stdio,
-            enabled: true,
-            source_path: String::new(),
-            command: Some("npx".into()),
-            args: vec!["-y".into(), "@upstash/context7-mcp@latest".into()],
-            url: None,
-            headers: HashMap::new(),
-            environment: HashMap::new(),
-        }
+pub(crate) fn prune_backups(dir: &Path, keep: usize) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .collect();
+    if files.len() <= keep {
+        return;
     }
-
-    fn temp_config_path(test_name: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "aimami-mcp-{test_name}-{}-{nanos}.toml",
-            std::process::id()
-        ))
-    }
-
-    #[test]
-    fn upsert_mcp_keeps_router_top_block_before_mcp_table() {
-        let path = temp_config_path("router-top");
-        let original = format!(
-            "{ROUTER_TOP_MANAGED_BLOCK_BEGIN}\n\
-             profile = \"aimai1\"\n\
-             model_catalog_json = \"/tmp/catalog.json\"\n\
-             {ROUTER_TOP_MANAGED_BLOCK_END}\n\n\
-             {BOTTOM_MANAGED_BLOCK_BEGIN}\n\
-             [model_providers.aimai1]\n\
-             name = \"AiMaMi 智能路由\"\n\
-             {BOTTOM_MANAGED_BLOCK_END}\n"
-        );
-        std::fs::write(&path, original).unwrap();
-
-        upsert_mcp_server(&path, &stdio_server("context7")).unwrap();
-        let updated = std::fs::read_to_string(&path).unwrap();
-
-        let top_pos = updated.find(ROUTER_TOP_MANAGED_BLOCK_BEGIN).unwrap();
-        let mcp_pos = updated.find("[mcp_servers.\"context7\"]").unwrap();
-        let bottom_pos = updated.find(BOTTOM_MANAGED_BLOCK_BEGIN).unwrap();
-        assert!(top_pos < mcp_pos);
-        assert!(mcp_pos < bottom_pos);
-
-        let parsed: toml::Value = updated.parse().expect("config must remain valid TOML");
-        assert_eq!(parsed["profile"].as_str(), Some("aimai1"));
-        assert_eq!(
-            parsed["mcp_servers"]["context7"]["command"].as_str(),
-            Some("npx")
-        );
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn upsert_mcp_relocates_existing_block_out_of_managed_block() {
-        let path = temp_config_path("relocate");
-        let original = format!(
-            "{BOTTOM_MANAGED_BLOCK_BEGIN}\n\
-             [model_providers.test_provider]\n\
-             name = \"X\"\n\n\
-             [mcp_servers.context7]\n\
-             command = \"old\"\n\n\
-             [profiles.test_provider]\n\
-             model_provider = \"test_provider\"\n\
-             {BOTTOM_MANAGED_BLOCK_END}\n"
-        );
-        std::fs::write(&path, original).unwrap();
-
-        let mut server = stdio_server("context7");
-        server.enabled = false;
-        upsert_mcp_server(&path, &server).unwrap();
-        let updated = std::fs::read_to_string(&path).unwrap();
-
-        let mcp_pos = updated.find("[mcp_servers.\"context7\"]").unwrap();
-        let bottom_pos = updated.find(BOTTOM_MANAGED_BLOCK_BEGIN).unwrap();
-        assert!(mcp_pos < bottom_pos);
-        assert!(updated.contains("enabled = false"));
-        assert!(!updated.contains("command = \"old\""));
-
-        let managed_block = &updated[bottom_pos..];
-        assert!(!managed_block.contains("[mcp_servers.\"context7\"]"));
-
-        let _ = std::fs::remove_file(path);
+    files.sort_by_key(|e| e.file_name());
+    let excess = files.len() - keep;
+    for entry in files.into_iter().take(excess) {
+        let _ = fs::remove_file(entry.path());
     }
 }

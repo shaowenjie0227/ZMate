@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useTranslation } from "react-i18next";
 import type { UpdateInstallabilityPayload } from "@/types";
@@ -93,13 +93,7 @@ export function useUpdateCheck() {
     }
   }, [t]);
 
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    const timer = setTimeout(() => {
-      checkForUpdate();
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [checkForUpdate]);
+  // 自建面板暂无更新服务器，不做启动自动检查；仅在设置页手动触发。
 
   const dismiss = useCallback(() => {
     setStatus("idle");

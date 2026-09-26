@@ -1,9 +1,19 @@
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
-  LayoutDashboard,
+  Boxes,
+  CircleUserRound,
   FileCode2,
+  Key,
+  LayoutDashboard,
+  LogIn,
+  LogOut,
+  MessagesSquare,
+  ScrollText,
   Server,
   Sparkles,
+  Wallet,
   Wrench,
   Settings,
   Sun,
@@ -11,9 +21,21 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { api } from "@/lib/api";
 import { useThemeValue, type Theme } from "@/hooks/use-theme";
+import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { Route } from "@/types/navigation";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Sidebar,
   SidebarContent,
@@ -29,13 +51,21 @@ export const appNavItems: {
   route: Route;
   icon: LucideIcon;
   labelKey: string;
+  /** 底部独立槽位（站点账号相关页 + 账号操作，与主导航隔开） */
+  bottom?: boolean;
 }[] = [
   { route: "overview", icon: LayoutDashboard, labelKey: "nav.overview" },
-  { route: "customInstructions", icon: FileCode2, labelKey: "nav.customInstructions" },
+  { route: "providers", icon: Boxes, labelKey: "nav.providers" },
+  { route: "apiKeys", icon: Key, labelKey: "nav.apiKeys", bottom: true },
+  { route: "usageLogs", icon: ScrollText, labelKey: "nav.usageLogs" },
+  { route: "wallet", icon: Wallet, labelKey: "nav.wallet", bottom: true },
   { route: "mcp", icon: Server, labelKey: "nav.mcp" },
   { route: "skills", icon: Sparkles, labelKey: "nav.skills" },
+  { route: "customInstructions", icon: FileCode2, labelKey: "nav.customInstructions" },
+  { route: "sessions", icon: MessagesSquare, labelKey: "nav.sessions" },
   { route: "maintenance", icon: Wrench, labelKey: "nav.maintenance" },
   { route: "settings", icon: Settings, labelKey: "nav.settings" },
+  { route: "profile", icon: CircleUserRound, labelKey: "nav.profile", bottom: true },
 ];
 
 const hiddenNavRoutes = new Set<Route>([]);
@@ -118,6 +148,92 @@ function SidebarThemeToggle({
   );
 }
 
+/** 底部账号状态按钮：未登录显示「登录站点」（跳登录令牌页），已登录显示「退出登录」 */
+function SidebarAuthButton({ onNavigate }: { onNavigate: (route: Route) => void }) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const connectionQuery = useQuery({
+    queryKey: ["site-connection"],
+    queryFn: () => api.newapiSiteConnectionStatus(),
+    staleTime: 30_000,
+  });
+  const connected = connectionQuery.data?.data.connected ?? false;
+  const storedBaseUrl = connectionQuery.data?.data.baseUrl ?? "";
+
+  const logoutMutation = useMutation({
+    mutationFn: () => api.newapiClearSiteConnection(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["site-connection"] });
+      void queryClient.invalidateQueries({ queryKey: ["site-usage"] });
+      void queryClient.invalidateQueries({ queryKey: ["wallet"] });
+      void queryClient.invalidateQueries({ queryKey: ["api-keys"] });
+      void queryClient.invalidateQueries({ queryKey: ["user-profile"] });
+      toast({ title: t("nav.logoutSuccess"), variant: "success" });
+    },
+    onError: (error) =>
+      toast({
+        title: t("common.error"),
+        description: error instanceof Error ? error.message : String(error),
+        variant: "destructive",
+      }),
+  });
+
+  return (
+    <SidebarMenuItem>
+      {connected ? (
+        <SidebarMenuButton
+          tooltip={t("nav.logout")}
+          className={cn(
+            navButtonClassName,
+            "text-destructive hover:text-destructive active:text-destructive",
+          )}
+          onClick={() => setConfirmOpen(true)}
+        >
+          <LogOut strokeWidth={1.75} className="size-4 shrink-0 text-destructive" />
+          <span className="truncate">{t("nav.logout")}</span>
+        </SidebarMenuButton>
+      ) : (
+        <SidebarMenuButton
+          tooltip={t("nav.loginSite")}
+          className={navButtonClassName}
+          onClick={() => onNavigate("siteLogin")}
+        >
+          <LogIn
+            strokeWidth={1.75}
+            className="size-4 shrink-0 text-sidebar-foreground/80 group-hover/menu-item:text-sidebar-accent-foreground"
+          />
+          <span className="truncate">{t("nav.loginSite")}</span>
+        </SidebarMenuButton>
+      )}
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("nav.logoutConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("nav.logoutConfirmDesc", { url: storedBaseUrl })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setConfirmOpen(false);
+                logoutMutation.mutate();
+              }}
+            >
+              {t("nav.logout")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </SidebarMenuItem>
+  );
+}
+
 export function AppSidebar({
   activeRoute,
   onNavigate,
@@ -139,21 +255,21 @@ export function AppSidebar({
         >
           <img
             src={SIDEBAR_LOGO_SRC}
-            alt="AiMaMi"
+            alt="ZMate"
             className="h-[35px] w-[35px] select-none rounded-full object-cover md:translate-x-1"
             draggable={false}
           />
         </div>
         <button
           type="button"
-          onClick={() => onNavigate("overview")}
+          onClick={() => onNavigate("providers")}
           className="group/header flex w-full items-center gap-3 rounded-[10px] pl-2.5 pr-3 py-1 text-left transition-colors hover:bg-sidebar-accent group-data-[collapsible=icon]/sidebar:hidden"
           style={{ marginTop: SIDEBAR_LOGO_TOP_OFFSET_PX }}
         >
           <div className="relative h-[35px] w-[35px] shrink-0">
             <img
               src={SIDEBAR_LOGO_SRC}
-              alt="AiMaMi"
+              alt="ZMate"
               className="h-full w-full select-none rounded-full object-cover"
               draggable={false}
             />
@@ -164,10 +280,10 @@ export function AppSidebar({
           </div>
           <div className="flex min-w-0 flex-col leading-tight">
             <span className="truncate text-[15px] font-semibold text-sidebar-foreground">
-              AiMaMi
+              ZMate
             </span>
             <span className="truncate text-[11px] text-sidebar-foreground/60">
-              Codex Assistant
+              ZCode Companion
             </span>
           </div>
         </button>
@@ -175,7 +291,7 @@ export function AppSidebar({
       <SidebarContent className="pt-[18px]">
         <SidebarMenu>
           {appNavItems
-            .filter((item) => !hiddenNavRoutes.has(item.route))
+            .filter((item) => !item.bottom && !hiddenNavRoutes.has(item.route))
             .map(({ route, icon: Icon, labelKey }) => {
               const isActive = activeRoute === route;
               return (
@@ -200,6 +316,37 @@ export function AppSidebar({
                 </SidebarMenuItem>
               );
             })}
+        </SidebarMenu>
+
+        {/* 底部独立槽位：API 密钥 / 钱包 / 个人中心 / 登录·退出登录 */}
+        <SidebarMenu className="mt-auto pb-2">
+          {appNavItems
+            .filter((item) => item.bottom && !hiddenNavRoutes.has(item.route))
+            .map(({ route, icon: Icon, labelKey }) => {
+              const isActive = activeRoute === route;
+              return (
+                <SidebarMenuItem key={route}>
+                  <SidebarMenuButton
+                    isActive={isActive}
+                    tooltip={t(labelKey)}
+                    className={navButtonClassName}
+                    onClick={() => onNavigate(route)}
+                  >
+                    <Icon
+                      strokeWidth={1.75}
+                      className={cn(
+                        "size-4 shrink-0",
+                        isActive
+                          ? "text-primary"
+                          : "text-sidebar-foreground/80 group-hover/menu-item:text-sidebar-accent-foreground",
+                      )}
+                    />
+                    <span className="truncate">{t(labelKey)}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })}
+          <SidebarAuthButton onNavigate={onNavigate} />
         </SidebarMenu>
       </SidebarContent>
 

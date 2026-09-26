@@ -1,4 +1,4 @@
-use crate::core::auth::current_timestamp;
+use crate::core::models::current_timestamp;
 use crate::core::models::*;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -123,11 +123,11 @@ pub fn load_skill_backups(backup_dir: &Path) -> Result<Vec<SkillBackupSummary>, 
 
 pub fn import_skill(
     skills_dir: &Path,
-    codexmate_dir: &Path,
+    skill_backups_dir: &Path,
     source_path: &str,
 ) -> Result<SkillImportPayload, CoreError> {
     std::fs::create_dir_all(skills_dir)?;
-    let backup_dir = codexmate_dir.join("skill-backups");
+    let backup_dir = skill_backups_dir;
     std::fs::create_dir_all(&backup_dir)?;
 
     let source = resolve_skill_source(Path::new(source_path))?;
@@ -174,7 +174,7 @@ pub fn import_skill(
 
 pub fn remove_skill(
     skills_dir: &Path,
-    codexmate_dir: &Path,
+    skill_backups_dir: &Path,
     id: &str,
 ) -> Result<SkillRemovePayload, CoreError> {
     let installed = load_installed_skills(skills_dir)?;
@@ -183,7 +183,7 @@ pub fn remove_skill(
         .find(|s| s.id == id)
         .ok_or_else(|| CoreError::NotFound(format!("Skill not found: {id}")))?;
 
-    let backup_dir = codexmate_dir.join("skill-backups");
+    let backup_dir = skill_backups_dir;
     let dir = PathBuf::from(&skill.directory_path);
     let backup = backup_skill_directory(&dir, skills_dir, &backup_dir, "remove")?;
 
@@ -201,10 +201,10 @@ pub fn remove_skill(
 
 pub fn restore_skill_backup(
     skills_dir: &Path,
-    codexmate_dir: &Path,
+    skill_backups_dir: &Path,
     backup_id: &str,
 ) -> Result<SkillRestorePayload, CoreError> {
-    let backup_dir = codexmate_dir.join("skill-backups");
+    let backup_dir = skill_backups_dir;
     let backup_path = backup_dir.join(backup_id);
     if !backup_path.exists() {
         return Err(CoreError::NotFound(format!(
@@ -257,10 +257,10 @@ pub fn restore_skill_backup(
 }
 
 pub fn delete_skill_backup(
-    codexmate_dir: &Path,
+    skill_backups_dir: &Path,
     backup_id: &str,
 ) -> Result<SkillDeleteBackupPayload, CoreError> {
-    let backup_dir = codexmate_dir.join("skill-backups");
+    let backup_dir = skill_backups_dir;
     let path = backup_dir.join(backup_id);
     if !path.exists() {
         return Err(CoreError::NotFound(format!(

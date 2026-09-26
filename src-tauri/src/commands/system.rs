@@ -1,153 +1,14 @@
-use crate::core::models::*;
-use crate::core::repository::{usage_refresh_interval_seconds, Repository};
+use crate::core::models::{
+    AppSettings, CleanPayload, CoreEnvelope, DiagnosePathCheck, DiagnosePayload,
+    UpdateInstallabilityPayload, ZcodeProxyPayload,
+};
+use crate::core::settings as app_settings;
+use crate::core::zcode_proxy as zcode_proxy_core;
+use crate::platform::paths::ZCodePaths;
+use crate::platform::process;
 use serde::Serialize;
-use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
-
-#[tauri::command]
-pub fn clean(repo: State<'_, Mutex<Repository>>) -> Result<CoreEnvelope<CleanPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.clean().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn rebuild_registry(
-    repo: State<'_, Mutex<Repository>>,
-) -> Result<CoreEnvelope<RebuildRegistryPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.rebuild_registry().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn set_auto_switch(
-    repo: State<'_, Mutex<Repository>>,
-    enabled: bool,
-) -> Result<CoreEnvelope<AutoSwitchConfigPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.set_auto_switch(enabled).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn configure_auto_switch(
-    repo: State<'_, Mutex<Repository>>,
-    threshold_5h_percent: Option<i32>,
-    threshold_weekly_percent: Option<i32>,
-) -> Result<CoreEnvelope<AutoSwitchConfigPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.configure_auto_switch(threshold_5h_percent, threshold_weekly_percent)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn set_api_proxy_config(
-    repo: State<'_, Mutex<Repository>>,
-    mode: ApiProxyMode,
-    url: Option<String>,
-) -> Result<CoreEnvelope<ApiModePayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.set_api_proxy_config(mode, url)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_usage_refresh_interval(repo: State<'_, Mutex<Repository>>) -> Result<String, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    Ok(repo.get_usage_refresh_interval())
-}
-
-#[tauri::command]
-pub fn set_usage_refresh_interval(
-    app: AppHandle,
-    repo: State<'_, Mutex<Repository>>,
-    interval: String,
-) -> Result<String, String> {
-    let normalized = {
-        let repo = repo.lock().map_err(|e| e.to_string())?;
-        repo.set_usage_refresh_interval(&interval)
-            .map_err(|e| e.to_string())?
-    };
-
-    let repo_state = app.state::<Mutex<Repository>>();
-    let _interval_seconds = {
-        let repo = repo_state.lock().map_err(|e| e.to_string())?;
-        usage_refresh_interval_seconds(&repo.get_usage_refresh_interval())
-    };
-    Ok(normalized)
-}
-
-#[tauri::command]
-pub async fn test_api_proxy_config(
-    app: AppHandle,
-    mode: ApiProxyMode,
-    url: Option<String>,
-) -> Result<CoreEnvelope<ApiProxyTestPayload>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let context = load_api_request_context_from_repo(&app)?;
-        let payload = crate::core::api_client::test_api_connectivity(
-            &ApiProxyConfigPayload { mode, url },
-            context.as_ref(),
-        );
-        Ok(CoreEnvelope::ok(payload))
-    })
-    .await
-    .map_err(|e| format!("Blocking command task failed: {e}"))?
-}
-
-#[tauri::command]
-pub async fn detect_api_proxy_config(
-    app: AppHandle,
-) -> Result<CoreEnvelope<ApiProxyDetectPayload>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let context = load_api_request_context_from_repo(&app)?;
-        let payload = crate::core::api_client::detect_api_proxy_config(context.as_ref());
-        Ok(CoreEnvelope::ok(payload))
-    })
-    .await
-    .map_err(|e| format!("Blocking command task failed: {e}"))?
-}
-
-fn load_api_request_context_from_repo(
-    app: &AppHandle,
-) -> Result<Option<crate::core::auth::ApiRequestContext>, String> {
-    let auth_path = {
-        let repo_state = app.state::<Mutex<Repository>>();
-        let repo = repo_state.lock().map_err(|e| e.to_string())?;
-        repo.paths().auth_path.clone()
-    };
-
-    Ok(crate::core::auth::load_auth_file(&auth_path)
-        .ok()
-        .and_then(|auth| crate::core::auth::make_api_request_context(&auth)))
-}
-
-#[tauri::command]
-pub fn run_daemon_once(
-    repo: State<'_, Mutex<Repository>>,
-) -> Result<CoreEnvelope<DaemonRunPayload>, String> {
-    let r = repo.lock().map_err(|e| e.to_string())?;
-    r.build_daemon_payload(true).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn diagnose(
-    repo: State<'_, Mutex<Repository>>,
-) -> Result<CoreEnvelope<DiagnosePayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    repo.diagnose().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn restart_codex() -> Result<(), String> {
-    crate::platform::process::restart_codex_app().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn load_bootstrap_state(
-    repo: State<'_, Mutex<Repository>>,
-) -> Result<CoreEnvelope<crate::core::bootstrap_cache::BootstrapStatePayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    Ok(CoreEnvelope::ok(repo.load_bootstrap_state()))
-}
+use std::sync::Arc;
+use tauri::State;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,6 +17,179 @@ pub struct SystemInfo {
     pub os_version: String,
     pub arch: String,
     pub hostname: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppStatePayload {
+    pub zcode_home: String,
+    pub provider_config_path: String,
+    pub cli_config_path: String,
+    pub skills_dir: String,
+    pub agents_md_path: String,
+    pub tasks_db_path: String,
+    pub session_db_path: String,
+    pub app_data_dir: String,
+    pub settings: AppSettings,
+    pub zcode_running: bool,
+}
+
+#[tauri::command]
+pub fn load_app_state(
+    paths: State<'_, Arc<ZCodePaths>>,
+) -> Result<CoreEnvelope<AppStatePayload>, String> {
+    let settings = app_settings::load_settings(&paths);
+    let payload = AppStatePayload {
+        zcode_home: paths.zcode_home.to_string_lossy().to_string(),
+        provider_config_path: paths.provider_config_path.to_string_lossy().to_string(),
+        cli_config_path: paths.cli_config_path.to_string_lossy().to_string(),
+        skills_dir: paths.skills_dir.to_string_lossy().to_string(),
+        agents_md_path: paths.agents_md_path.to_string_lossy().to_string(),
+        tasks_db_path: paths.tasks_db_path.to_string_lossy().to_string(),
+        session_db_path: paths.session_db_path.to_string_lossy().to_string(),
+        app_data_dir: paths.app_data_dir.to_string_lossy().to_string(),
+        settings,
+        zcode_running: process::is_zcode_running(),
+    };
+    Ok(CoreEnvelope::ok(payload))
+}
+
+#[tauri::command]
+pub fn set_check_zcode_running(
+    paths: State<'_, Arc<ZCodePaths>>,
+    enabled: bool,
+) -> Result<CoreEnvelope<AppSettings>, String> {
+    let mut settings = app_settings::load_settings(&paths);
+    settings.check_zcode_running = enabled;
+    app_settings::save_settings(&paths, &settings).map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(settings))
+}
+
+#[tauri::command]
+pub fn is_zcode_running() -> Result<CoreEnvelope<bool>, String> {
+    Ok(CoreEnvelope::ok(process::is_zcode_running()))
+}
+
+#[tauri::command]
+pub fn load_zcode_proxy(
+    paths: State<'_, Arc<ZCodePaths>>,
+) -> Result<CoreEnvelope<ZcodeProxyPayload>, String> {
+    let payload = zcode_proxy_core::load_zcode_proxy(&paths).map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(payload))
+}
+
+#[tauri::command]
+pub fn set_zcode_proxy(
+    paths: State<'_, Arc<ZCodePaths>>,
+    input: zcode_proxy_core::ZcodeProxyInput,
+) -> Result<CoreEnvelope<ZcodeProxyPayload>, String> {
+    let payload = zcode_proxy_core::set_zcode_proxy(&paths, &input).map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(payload))
+}
+
+#[tauri::command]
+pub fn restart_zcode() -> Result<CoreEnvelope<()>, String> {
+    process::restart_zcode()
+        .map(|()| CoreEnvelope::ok(()))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn diagnose(
+    paths: State<'_, Arc<ZCodePaths>>,
+) -> Result<CoreEnvelope<DiagnosePayload>, String> {
+    let path = |p: &std::path::Path, key: &str| DiagnosePathCheck {
+        key: key.to_string(),
+        path: p.to_string_lossy().to_string(),
+        exists: p.exists(),
+    };
+    let path_checks = vec![
+        path(&paths.zcode_home, "zcodeHome"),
+        path(&paths.provider_config_path, "providerConfig"),
+        path(&paths.cli_config_path, "cliConfig"),
+        path(&paths.skills_dir, "skillsDir"),
+        path(&paths.agents_md_path, "agentsMd"),
+        path(&paths.tasks_db_path, "tasksDb"),
+        path(&paths.session_db_path, "sessionDb"),
+        path(&paths.rollout_dir, "rolloutDir"),
+        path(&paths.app_data_dir, "appDataDir"),
+    ];
+
+    let (provider_config_valid, provider_config_error) = check_json_file(&paths.provider_config_path);
+    let (cli_config_valid, cli_config_error) = check_json_file(&paths.cli_config_path);
+
+    Ok(CoreEnvelope::ok(DiagnosePayload {
+        zcode_home: paths.zcode_home.to_string_lossy().to_string(),
+        core_version: env!("CARGO_PKG_VERSION").to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        zcode_running: process::is_zcode_running(),
+        path_checks,
+        provider_config_valid,
+        provider_config_error,
+        cli_config_valid,
+        cli_config_error,
+        session_db_exists: paths.session_db_path.exists(),
+        tasks_db_exists: paths.tasks_db_path.exists(),
+    }))
+}
+
+fn check_json_file(path: &std::path::Path) -> (bool, Option<String>) {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(format!("JSON 解析失败：{e}"))),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, None),
+        Err(e) => (false, Some(format!("读取失败：{e}"))),
+    }
+}
+
+#[tauri::command]
+pub fn clean(paths: State<'_, Arc<ZCodePaths>>) -> Result<CoreEnvelope<CleanPayload>, String> {
+    let provider = clean_dir_files(&paths.provider_config_backups_dir);
+    let skill = clean_dir_all_children(&paths.skill_backups_dir);
+    let instruction = clean_dir_files(&paths.custom_instruction_history_dir);
+    paths.ensure_app_directories().map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(CleanPayload {
+        provider_backups_removed: provider,
+        skill_backups_removed: skill,
+        instruction_history_removed: instruction,
+    }))
+}
+
+fn clean_dir_files(dir: &std::path::Path) -> i32 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.is_file() && std::fs::remove_file(&p).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+fn clean_dir_all_children(dir: &std::path::Path) -> i32 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        let is_dir = p.is_dir();
+        let remove_ok = if is_dir {
+            std::fs::remove_dir_all(&p).is_ok()
+        } else {
+            std::fs::remove_file(&p).is_ok()
+        };
+        if remove_ok {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 #[tauri::command]

@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useTheme } from "@/hooks/use-theme";
 import { useAccentColor } from "@/hooks/use-accent-color";
-import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { useDeferredReady } from "@/hooks/use-deferred-ready";
 import { useRouteTransition } from "@/hooks/use-route-transition";
@@ -32,10 +31,26 @@ import {
 } from "@/components/ui/alert-dialog";
 import { createAppQueryClient } from "@/lib/query-client";
 import { api } from "@/lib/api";
-import { isMacPlatform } from "@/lib/platform";
 import type { Route } from "@/types/navigation";
 import "./lib/i18n";
 
+const OverviewPage = lazy(() =>
+  import("@/components/overview/overview-page").then((module) => ({ default: module.OverviewPage })),
+);
+const ProvidersPage = lazy(() =>
+  import("@/components/providers/providers-page").then((module) => ({ default: module.ProvidersPage })),
+);
+const WalletPage = lazy(() =>
+  import("@/components/wallet/wallet-page").then((module) => ({ default: module.WalletPage })),
+);
+const ApiKeysPage = lazy(() =>
+  import("@/components/api-keys/api-keys-page").then((module) => ({ default: module.ApiKeysPage })),
+);
+const UsageLogsPage = lazy(() =>
+  import("@/components/usage-logs/usage-logs-page").then((module) => ({
+    default: module.UsageLogsPage,
+  })),
+);
 const McpPage = lazy(() =>
   import("@/components/mcp/mcp-page").then((module) => ({ default: module.McpPage })),
 );
@@ -45,14 +60,26 @@ const SkillsPage = lazy(() =>
 const CustomInstructionsPage = lazy(() =>
   import("@/components/custom-instructions/custom-instructions-page").then((module) => ({ default: module.CustomInstructionsPage })),
 );
+const SessionsPage = lazy(() =>
+  import("@/components/sessions/sessions-page").then((module) => ({ default: module.SessionsPage })),
+);
 const MaintenancePage = lazy(() =>
   import("@/components/maintenance/maintenance-page").then((module) => ({ default: module.MaintenancePage })),
 );
 const SettingsPage = lazy(() =>
   import("@/components/settings/settings-page").then((module) => ({ default: module.SettingsPage })),
 );
+const SiteLoginPage = lazy(() =>
+  import("@/components/site-login/site-login-page").then((module) => ({
+    default: module.SiteLoginPage,
+  })),
+);
+const ProfilePage = lazy(() =>
+  import("@/components/profile/profile-page").then((module) => ({
+    default: module.ProfilePage,
+  })),
+);
 
-const DRAG_REGION_HEIGHT = isMacPlatform() ? 48 : 0;
 const queryClient = createAppQueryClient();
 
 export function MainAppRoot() {
@@ -73,7 +100,6 @@ function MainApp() {
   const [sidebarOpen, setSidebarOpen] = useState(
     () => localStorage.getItem("sidebar_collapsed") === "false",
   );
-  const { refreshInterval, setRefreshInterval } = useAutoRefresh();
   const update = useUpdateCheck();
   const showUpdateOverlay =
     update.status === "available" ||
@@ -92,11 +118,19 @@ function MainApp() {
   useEffect(() => {
     if (prewarmRoutes) {
       void Promise.allSettled([
+        import("@/components/overview/overview-page"),
+        import("@/components/providers/providers-page"),
+        import("@/components/wallet/wallet-page"),
+        import("@/components/api-keys/api-keys-page"),
+        import("@/components/usage-logs/usage-logs-page"),
         import("@/components/mcp/mcp-page"),
         import("@/components/skills/skills-page"),
         import("@/components/custom-instructions/custom-instructions-page"),
+        import("@/components/sessions/sessions-page"),
         import("@/components/maintenance/maintenance-page"),
         import("@/components/settings/settings-page"),
+        import("@/components/site-login/site-login-page"),
+        import("@/components/profile/profile-page"),
       ]);
     }
   }, [prewarmRoutes]);
@@ -104,15 +138,29 @@ function MainApp() {
   const renderPage = (targetRoute: Route) => {
     switch (targetRoute) {
       case "overview":
-        return null;
+        return <OverviewPage />;
+      case "providers":
+        return <ProvidersPage />;
+      case "apiKeys":
+        return <ApiKeysPage />;
+      case "usageLogs":
+        return <UsageLogsPage />;
+      case "wallet":
+        return <WalletPage />;
       case "mcp":
         return <McpPage />;
       case "skills":
         return <SkillsPage />;
       case "customInstructions":
         return <CustomInstructionsPage />;
+      case "sessions":
+        return <SessionsPage />;
       case "maintenance":
         return <MaintenancePage />;
+      case "siteLogin":
+        return <SiteLoginPage />;
+      case "profile":
+        return <ProfilePage onNavigate={setRoute} />;
       case "settings":
         return (
           <SettingsPage
@@ -127,8 +175,6 @@ function MainApp() {
               i18n.changeLanguage(lang);
               localStorage.setItem("app_language", lang);
             }}
-            refreshInterval={refreshInterval}
-            setRefreshInterval={setRefreshInterval}
             onCheckUpdate={update.checkForUpdate}
           />
         );
@@ -137,25 +183,32 @@ function MainApp() {
     }
   };
 
-  const routeLabelKey = appNavItems.find((item) => item.route === route)?.labelKey ?? "nav.overview";
+  // 不在侧边栏导航里的路由标题兜底（如登录令牌页，经「登录站点」/个人中心快捷入口进入）
+  const routeLabelKey =
+    appNavItems.find((item) => item.route === route)?.labelKey ??
+    (route === "siteLogin" ? "nav.siteLogin" : "nav.overview");
 
   const routeOrder: Route[] = [
     "overview",
-    "customInstructions",
+    "providers",
+    "apiKeys",
+    "usageLogs",
+    "wallet",
     "mcp",
     "skills",
+    "customInstructions",
+    "sessions",
     "maintenance",
     "settings",
+    "siteLogin",
+    "profile",
   ];
+
+  // 满高页面：自身管理内部滚动（如使用日志的固定底部分页栏），Stage 不再整体滚动
+  const fillHeightRoutes = new Set<Route>(["usageLogs"]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#FFFFFF] dark:bg-background">
-      <div
-        className="fixed inset-x-0 top-0 z-[60]"
-        data-tauri-drag-region
-        style={{ WebkitAppRegion: "drag", height: DRAG_REGION_HEIGHT } as CSSProperties}
-      />
-
       <SidebarProvider
         open={sidebarOpen}
         onOpenChange={(open) => {
@@ -184,6 +237,8 @@ function MainApp() {
                 <PageStage
                   key={candidate}
                   state={routeTransition.getStage(candidate)}
+                  fillHeight={fillHeightRoutes.has(candidate)}
+                  scrollable={!fillHeightRoutes.has(candidate)}
                 >
                   <Suspense fallback={<PageShellSkeleton />}>
                     {renderPage(candidate)}

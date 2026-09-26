@@ -1,98 +1,75 @@
-use crate::core::auth::current_timestamp;
-use crate::core::mcp;
-use crate::core::models::*;
-use crate::core::repository::Repository;
+use crate::core::mcp::{self, McpServerInput};
+use crate::core::models::{
+    CoreEnvelope, McpServerListPayload, McpServerMutationPayload, McpServerRemovePayload,
+    McpTransport,
+};
+use crate::platform::paths::ZCodePaths;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::Arc;
 use tauri::State;
+
+fn transport_from_str(value: &str) -> Result<McpTransport, String> {
+    match value {
+        "stdio" => Ok(McpTransport::Stdio),
+        "http" => Ok(McpTransport::Http),
+        "sse" => Ok(McpTransport::Sse),
+        other => Err(format!("未知 transport 类型：{other}")),
+    }
+}
 
 #[tauri::command]
 pub fn load_mcp_servers(
-    repo: State<'_, Mutex<Repository>>,
+    paths: State<'_, Arc<ZCodePaths>>,
 ) -> Result<CoreEnvelope<McpServerListPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    let paths = repo.paths();
-    let items = mcp::load_mcp_servers(&paths.config_path).map_err(|e| e.to_string())?;
-    let payload = McpServerListPayload {
-        total: items.len() as i32,
-        source_path: paths.config_path.display().to_string(),
-        last_scan_at: current_timestamp(),
-        items,
-    };
-    let _ = repo.store_bootstrap_mcp_servers(&payload);
-    Ok(CoreEnvelope::ok(payload))
+    mcp::load_mcp_servers(&paths)
+        .map(CoreEnvelope::ok)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn upsert_mcp_server(
-    repo: State<'_, Mutex<Repository>>,
+    paths: State<'_, Arc<ZCodePaths>>,
     name: String,
     transport: String,
     enabled: bool,
     command: Option<String>,
-    args: Vec<String>,
+    args: Option<Vec<String>>,
     url: Option<String>,
-    headers: HashMap<String, String>,
-    environment: HashMap<String, String>,
+    headers: Option<HashMap<String, String>>,
+    environment: Option<HashMap<String, String>>,
 ) -> Result<CoreEnvelope<McpServerMutationPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    let paths = repo.paths();
-    let transport_enum = match transport.as_str() {
-        "stdio" => McpTransport::Stdio,
-        "http" => McpTransport::Http,
-        "sse" => McpTransport::Sse,
-        _ => McpTransport::Unknown,
-    };
-    let server = McpServerSummary {
+    let input = McpServerInput {
         name,
-        transport: transport_enum,
+        transport: transport_from_str(&transport)?,
         enabled,
-        source_path: paths.config_path.display().to_string(),
         command,
-        args,
+        args: args.unwrap_or_default(),
         url,
-        headers,
-        environment,
+        headers: headers.unwrap_or_default(),
+        environment: environment.unwrap_or_default(),
     };
-    let saved = mcp::upsert_mcp_server(&paths.config_path, &server).map_err(|e| e.to_string())?;
-    let all = mcp::load_mcp_servers(&paths.config_path).map_err(|e| e.to_string())?;
-    Ok(CoreEnvelope::ok(McpServerMutationPayload {
-        server: saved,
-        total: all.len() as i32,
-        source_path: paths.config_path.display().to_string(),
-    }))
+    mcp::upsert_mcp_server(&paths, input)
+        .map(CoreEnvelope::ok)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_mcp_server_enabled(
-    repo: State<'_, Mutex<Repository>>,
+    paths: State<'_, Arc<ZCodePaths>>,
     name: String,
     enabled: bool,
 ) -> Result<CoreEnvelope<McpServerMutationPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    let paths = repo.paths();
-    let saved = mcp::set_mcp_server_enabled(&paths.config_path, &name, enabled)
-        .map_err(|e| e.to_string())?;
-    let all = mcp::load_mcp_servers(&paths.config_path).map_err(|e| e.to_string())?;
-    Ok(CoreEnvelope::ok(McpServerMutationPayload {
-        server: saved,
-        total: all.len() as i32,
-        source_path: paths.config_path.display().to_string(),
-    }))
+    mcp::set_mcp_server_enabled(&paths, &name, enabled)
+        .map(CoreEnvelope::ok)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn remove_mcp_server(
-    repo: State<'_, Mutex<Repository>>,
+    paths: State<'_, Arc<ZCodePaths>>,
     name: String,
 ) -> Result<CoreEnvelope<McpServerRemovePayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    let paths = repo.paths();
-    mcp::remove_mcp_server(&paths.config_path, &name).map_err(|e| e.to_string())?;
-    let all = mcp::load_mcp_servers(&paths.config_path).map_err(|e| e.to_string())?;
-    Ok(CoreEnvelope::ok(McpServerRemovePayload {
-        removed_name: name,
-        total: all.len() as i32,
-        source_path: paths.config_path.display().to_string(),
-    }))
+    mcp::remove_mcp_server(&paths, &name)
+        .map(CoreEnvelope::ok)
+        .map_err(|e| e.to_string())
 }

@@ -7,10 +7,15 @@ interface SiteHeaderProps {
 
 export function SiteHeader({ title }: SiteHeaderProps) {
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+    <header
+      className="relative z-[70] flex h-12 shrink-0 items-center gap-2 border-b px-4"
+      data-tauri-drag-region
+    >
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-2 !h-4" />
-      <h1 className="text-sm font-medium">{title}</h1>
+      <h1 className="text-sm font-medium" data-tauri-drag-region>
+        {title}
+      </h1>
     </header>
   );
 }

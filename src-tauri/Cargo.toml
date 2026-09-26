@@ -1,20 +1,19 @@
 [package]
-name = "aimami"
-version = "1.0.0"
-default-run = "AiMaMi"
-description = "Cross-platform Codex companion app — MCP, Skills, Custom Instructions, and more"
-authors = ["borawong"]
+name = "zmate"
+version = "0.1.0"
+default-run = "ZMate"
+description = "ZCode 桌面伴侣 — 供应商注入、MCP、Skills、会话管理"
+authors = ["shaowenjie"]
 license = "Apache-2.0"
-repository = "https://github.com/borawong/AiMaMi"
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "aimami_lib"
+name = "zmate_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "AiMaMi"
+name = "ZMate"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -26,21 +25,16 @@ tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-process = "2"
 tauri-plugin-shell = "2"
-tauri-plugin-updater = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
-reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls", "socks"], default-features = false }
-base64 = "0.22"
-sha2 = "0.10"
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls", "socks", "cookies"], default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 hostname = "0.4"
-log = "0.4"
-env_logger = "0.11"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 
@@ -48,8 +42,5 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_Foundation"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = { version = "3", features = ["OSX_10_15"] }
-objc2 = "0.6"
-block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSThread", "NSGeometry", "NSValue", "NSArray", "NSString", "NSNotification", "NSOperation", "NSBundle"] }
 objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSWindow", "NSRunningApplication", "NSApplication", "NSWorkspace", "NSEvent", "NSColor"] }
