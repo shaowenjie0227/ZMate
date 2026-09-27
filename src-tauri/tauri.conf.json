@@ -17,7 +17,8 @@
     "windows": [
       {
         "label": "main",
-        "title": "",
+        "title": "ZMate",
+        "hiddenTitle": true,
         "width": 1200,
         "height": 800,
         "minWidth": 960,

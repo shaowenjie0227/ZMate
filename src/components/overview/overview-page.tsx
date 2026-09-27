@@ -1,11 +1,10 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, CircleX, FolderOpen, Loader2, RefreshCw } from "lucide-react";
+import { CircleCheck, CircleX, FolderOpen } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { ActivityDay, TokenDay } from "@/types";
-import { useBusyAction } from "@/hooks/use-busy-action";
 import { Heatmap, HeatmapLegend, type HeatmapDay } from "@/components/ui/heatmap";
 import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
 import { BentoCard } from "@/components/ui/bento-card";
@@ -56,7 +55,6 @@ function buildHeatmapDays(
 
 export function OverviewPage() {
   const { t } = useTranslation();
-  const refreshAction = useBusyAction({ minVisibleMs: 500 });
   const [tab, setTab] = useState<TabKey>("activity");
   const [range, setRange] = useState<RangeKey>("year");
 
@@ -74,13 +72,6 @@ export function OverviewPage() {
   const usage = usageQuery.data?.data;
   const summary = usage?.summary ?? null;
 
-  const refresh = async () => {
-    await refreshAction.run(async () => {
-      await query.refetch();
-      await usageQuery.refetch();
-    });
-  };
-
   const heatmapDays = useMemo(() => {
     const rangeDays = RANGE_DAYS[range];
     const days: { date: string; primary: number }[] =
@@ -93,23 +84,23 @@ export function OverviewPage() {
   const healthRows = useMemo(() => {
     if (!data) return [];
     const check = (key: string) => data.pathChecks.find((c) => c.key === key);
+    // 会话索引（tasks-index.sqlite）与会话数据库（cli/db/db.sqlite）合并为一行展示，
+    // 两者都存在才算正常
+    const tasksDb = check("tasksDb");
+    const sessionDb = check("sessionDb");
+    const sessionStores =
+      tasksDb && sessionDb
+        ? { ...sessionDb, key: "sessionStores", exists: tasksDb.exists && sessionDb.exists }
+        : undefined;
     return [
       { label: t("overview.pathZcodeHome"), check: check("zcodeHome") },
       { label: t("overview.pathProviderConfig"), check: check("providerConfig"), valid: data.providerConfigValid, error: data.providerConfigError },
-      { label: t("overview.pathTasksDb"), check: check("tasksDb") },
-      { label: t("overview.pathSessionDb"), check: check("sessionDb") },
+      { label: t("overview.pathSessionStores"), check: sessionStores },
     ].filter((row) => row.check);
   }, [data, t]);
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-end justify-between">
-        <h2 className="text-lg font-semibold">{t("overview.title")}</h2>
-        <Button variant="outline" size="icon" onClick={() => void refresh()} disabled={refreshAction.busy}>
-          {refreshAction.busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-        </Button>
-      </div>
-
+    <div className="space-y-3.5">
       {/* 站点余额与用量 */}
       <div>
         <div className="grid grid-cols-4 gap-4">
@@ -161,7 +152,7 @@ export function OverviewPage() {
 
       {/* 状态 + 健康 */}
       <div className="grid gap-4 lg:grid-cols-2">
-        <BentoCard className="p-5">
+        <BentoCard compact>
           <p className="text-sm text-muted-foreground">{t("overview.zcodeTitle")}</p>
           {query.isLoading || !data ? (
             <Skeleton className="mt-3 h-8 w-32" />
@@ -182,12 +173,12 @@ export function OverviewPage() {
           )}
           {data && (
             <>
-              <p className="mt-4 text-xs text-muted-foreground">{t("overview.dataDir")}</p>
+              <p className="mt-3 text-xs text-muted-foreground">{t("overview.dataDir")}</p>
               <p className="mt-1 break-all font-mono text-xs text-foreground">{data.zcodeHome}</p>
               <Button
                 variant="outline"
                 size="sm"
-                className="mt-4"
+                className="mt-3"
                 onClick={() => void api.openPath(data.zcodeHome)}
               >
                 <FolderOpen />
@@ -197,7 +188,7 @@ export function OverviewPage() {
           )}
         </BentoCard>
 
-        <BentoCard className="p-5">
+        <BentoCard compact>
           <div className="flex items-center justify-between">
             <h3 className="font-semibold">{t("overview.healthTitle")}</h3>
             {data && data.providerConfigValid && (
@@ -220,7 +211,7 @@ export function OverviewPage() {
                 const valid = row.valid !== false;
                 const ok = exists && valid;
                 return (
-                  <div key={row.check!.key} className="flex items-center justify-between py-2.5">
+                  <div key={row.check!.key} className="flex items-center justify-between py-2">
                     <span className="text-sm">{row.label}</span>
                     <span
                       className={cn(
@@ -252,7 +243,7 @@ export function OverviewPage() {
       </div>
 
       {/* 活跃趋势热力图 */}
-      <BentoCard className="p-5">
+      <BentoCard className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="rounded-full bg-muted p-0.5 dark:bg-white/[0.06]">
             <AnimatedSegmentedControl
@@ -322,15 +313,15 @@ function UsageCard({
   loading?: boolean;
 }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-border bg-card p-5">
+    <div className="relative overflow-hidden rounded-2xl border border-border bg-card px-4 py-3">
       <span className={cn("absolute inset-x-0 top-0 h-[3px]", accent)} />
-      <p className="text-[13px] font-medium tracking-wide text-muted-foreground">{label}</p>
+      <p className="text-xs font-medium tracking-wide text-muted-foreground">{label}</p>
       {loading || amount == null ? (
-        <Skeleton className="mt-2 h-9 w-20" />
+        <Skeleton className="mt-1.5 h-6 w-20" />
       ) : (
-        <p className="mt-1 text-3xl font-bold tabular-nums leading-none">{amount}</p>
+        <p className="mt-1 text-2xl font-bold tabular-nums leading-none">{amount}</p>
       )}
-      <p className="mt-2 truncate text-xs text-muted-foreground">{hint}</p>
+      <p className="mt-1.5 truncate text-xs text-muted-foreground">{hint}</p>
     </div>
   );
 }

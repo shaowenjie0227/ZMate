@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -47,6 +48,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { CONTEXT_TIERS } from "@/lib/model-tiers";
 import { cn } from "@/lib/utils";
 
 /** 面板绑定的中转站预设；选协议后按规则自动补 /v1 */
@@ -57,22 +59,53 @@ const PROTOCOLS: ProviderApiType[] = [
   "anthropic-messages",
 ];
 
+/** 该协议全部候选推理档位；新注入的模型默认全选 */
 function defaultLevels(protocol: ProviderApiType): string[] {
   return protocol === "anthropic-messages"
     ? ["off", "low", "medium", "high"]
-    : ["low", "medium", "high"];
+    : ["none", "low", "medium", "high", "xhigh", "max"];
 }
 
 function presetBaseUrl(protocol: ProviderApiType): string {
   return protocol === "anthropic-messages" ? AISPOT_BASE : `${AISPOT_BASE}/v1`;
 }
 
+/** path 里是否已经有 /v1 这类版本段（有则不再追加，避免拼成 /v1/v1） */
+function hasVersionSegment(url: string): boolean {
+  const withoutScheme = url.split("://").pop() ?? url;
+  const slash = withoutScheme.indexOf("/");
+  const path = slash === -1 ? "" : withoutScheme.slice(slash);
+  return path.split("/").some((seg) => /^v[0-9]+$/i.test(seg));
+}
+
+/**
+ * 用户手动填的 baseUrl 也要按协议归一化：
+ * 已带版本段 → 原样保留；否则 openai 系补 /v1、anthropic 挂根路径。
+ */
+function normalizeBaseUrlFor(url: string, protocol: ProviderApiType): string {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  if (trimmed === "") {
+    return trimmed;
+  }
+  if (hasVersionSegment(trimmed)) {
+    return trimmed;
+  }
+  return protocol === "anthropic-messages" ? trimmed : `${trimmed}/v1`;
+}
+
 interface ModelDraft {
   selected: boolean;
+  /** 高级选项区展开状态（纯 UI 状态，不参与提交） */
+  advancedOpen: boolean;
   contextWindow: string;
   supportsImage: boolean;
+  maxOutput: string;
+  supportsVideo: boolean;
+  supportsPdf: boolean;
+  capStructured: boolean;
+  capWebSearch: boolean;
+  capMidSystem: boolean;
   levels: string[];
-  levelInput: string;
   reasoningMap: string;
 }
 
@@ -86,6 +119,11 @@ export function ProvidersPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const refreshAction = useBusyAction({ minVisibleMs: 500 });
+  // 页面操作按钮挂到顶栏（SiteHeader 的 #site-header-actions 容器）
+  const [headerActionsEl, setHeaderActionsEl] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setHeaderActionsEl(document.getElementById("site-header-actions"));
+  }, []);
 
   const [formOpen, setFormOpen] = useState(false);
   const [siteImportOpen, setSiteImportOpen] = useState(false);
@@ -104,12 +142,6 @@ export function ProvidersPage() {
     queryKey: ["providers"],
     queryFn: () => api.loadProviders(),
   });
-  const runningQuery = useQuery({
-    queryKey: ["zcode-running"],
-    queryFn: () => api.isZcodeRunning(),
-    staleTime: 30_000,
-  });
-
   const providers = stateQuery.data?.data.items ?? [];
   const payload = stateQuery.data?.data;
 
@@ -188,38 +220,36 @@ export function ProvidersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="space-y-1">
-          <h2 className="text-lg font-semibold">{t("providers.title")}</h2>
-          <p className="text-sm text-muted-foreground">{t("providers.description")}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon" onClick={() => void refresh()} disabled={refreshAction.busy}>
-            {refreshAction.busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-          </Button>
-          <Button variant="outline" onClick={() => setSiteImportOpen(true)}>
-            <KeyRound />
-            {t("providers.site.title")}
-          </Button>
-          <Button
-            onClick={() => {
-              setEditing(null);
-              setFormOpen(true);
-            }}
-          >
-            <Plus />
-            {t("providers.add")}
-          </Button>
-        </div>
-      </div>
+      {headerActionsEl &&
+        createPortal(
+          <>
+            <Button variant="outline" onClick={() => setSiteImportOpen(true)}>
+              <KeyRound />
+              {t("providers.site.title")}
+            </Button>
+            <Button
+              onClick={() => {
+                setEditing(null);
+                setFormOpen(true);
+              }}
+            >
+              <Plus />
+              {t("providers.add")}
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              className="ml-auto"
+              onClick={() => void refresh()}
+              disabled={refreshAction.busy}
+            >
+              {refreshAction.busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            </Button>
+          </>,
+          headerActionsEl,
+        )}
 
-      {runningQuery.data?.data === true && (
-        <div className="rounded-xl border border-sky-500/30 bg-sky-500/8 px-4 py-3 text-sm text-sky-700 dark:text-sky-300">
-          {t("providers.zcodeRunningHint")}
-        </div>
-      )}
-
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="flex gap-3">
         <StatCard label={t("providers.providerCount")} value={providers.length} loading={stateQuery.isLoading} />
         <StatCard
           label={t("providers.modelCount")}
@@ -227,6 +257,7 @@ export function ProvidersPage() {
           loading={stateQuery.isLoading}
         />
         <StatCard
+          className="min-w-0 flex-1"
           label={t("providers.configFile")}
           value={payload?.configExists ? "" : t("providers.empty")}
           path={payload?.sourcePath}
@@ -322,29 +353,35 @@ function StatCard({
   path,
   onCopyPath,
   loading,
+  className,
 }: {
   label: string;
   value: number | string;
   path?: string;
   onCopyPath?: () => void;
   loading?: boolean;
+  className?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-border bg-card p-4">
-      <p className="text-xs text-muted-foreground">{label}</p>
+    <div
+      className={`flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3${
+        className ? ` ${className}` : ""
+      }`}
+    >
+      <p className="shrink-0 text-xs text-muted-foreground">{label}</p>
       {loading ? (
-        <Skeleton className="mt-2 h-6 w-16" />
+        <Skeleton className="h-6 w-16" />
       ) : path ? (
         <button
           type="button"
           onClick={onCopyPath}
-          className="mt-2 flex w-full items-center gap-1.5 text-left text-sm font-medium text-primary hover:underline"
+          className="flex min-w-0 flex-1 items-center justify-end gap-1.5 text-right text-sm font-medium text-primary hover:underline"
         >
           <span className="truncate">{path}</span>
           <Copy className="size-3.5 shrink-0" />
         </button>
       ) : (
-        <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
+        <p className="ml-auto text-xl font-semibold tabular-nums">{value}</p>
       )}
     </div>
   );
@@ -518,10 +555,16 @@ function ProviderCard({
 function emptyDraft(protocol: ProviderApiType): ModelDraft {
   return {
     selected: true,
+    advancedOpen: false,
     contextWindow: "",
     supportsImage: false,
+    maxOutput: "",
+    supportsVideo: false,
+    supportsPdf: false,
+    capStructured: false,
+    capWebSearch: false,
+    capMidSystem: false,
     levels: defaultLevels(protocol),
-    levelInput: "",
     reasoningMap: "",
   };
 }
@@ -532,10 +575,16 @@ function draftFromSummary(
 ): ModelDraft {
   return {
     selected: true,
+    advancedOpen: false,
     contextWindow: model.contextWindow != null ? String(model.contextWindow) : "",
     supportsImage: model.supportsImage ?? false,
+    maxOutput: model.maxOutputTokens != null ? String(model.maxOutputTokens) : "",
+    supportsVideo: model.supportsVideo ?? false,
+    supportsPdf: model.supportsPdf ?? false,
+    capStructured: model.supportsJsonSchemaOutput ?? false,
+    capWebSearch: model.supportsNativeWebSearch ?? false,
+    capMidSystem: model.supportsMidConversationSystem ?? false,
     levels: model.reasoning?.values ?? fallbackLevels,
-    levelInput: "",
     reasoningMap: model.reasoning?.map ?? "",
   };
 }
@@ -596,6 +645,15 @@ function ProviderFormDialog({
     setBaseUrl((prev) =>
       prev === "" || prev.startsWith(AISPOT_BASE) ? presetBaseUrl(next) : prev,
     );
+    // 档位候选集随协议变化（anthropic 含 off、openai 系含 none/xhigh/max），
+    // 已选档位统一重置为新协议的全量档位（默认全选）
+    setDrafts((prev) => {
+      const nextDrafts: Record<string, ModelDraft> = {};
+      for (const [id, draft] of Object.entries(prev)) {
+        nextDrafts[id] = { ...draft, levels: defaultLevels(next) };
+      }
+      return nextDrafts;
+    });
     setConnectivity(null);
   };
 
@@ -651,10 +709,17 @@ function ProviderFormDialog({
         .map((id) => {
           const draft = drafts[id];
           const contextWindow = Number.parseInt(draft.contextWindow, 10);
+          const maxOutput = Number.parseInt(draft.maxOutput, 10);
           return {
             modelId: id,
             contextWindow: Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : null,
             supportsImage: draft.supportsImage ? true : null,
+            maxOutputTokens: Number.isFinite(maxOutput) && maxOutput > 0 ? maxOutput : null,
+            supportsVideo: draft.supportsVideo ? true : null,
+            supportsPdf: draft.supportsPdf ? true : null,
+            supportsJsonSchemaOutput: draft.capStructured ? true : null,
+            supportsNativeWebSearch: draft.capWebSearch ? true : null,
+            supportsMidConversationSystem: draft.capMidSystem ? true : null,
             reasoningLevels: draft.levels,
             reasoningMap: draft.reasoningMap.trim() ? draft.reasoningMap.trim() : null,
           };
@@ -663,7 +728,7 @@ function ProviderFormDialog({
         providerId: editing ? editing.providerId : null,
         providerName: providerName.trim(),
         apiType: protocol,
-        baseUrl: baseUrl.trim(),
+        baseUrl: normalizeBaseUrlFor(baseUrl, protocol),
         apiKey: apiKey.trim(),
         models: selectedModels,
       });
@@ -685,6 +750,7 @@ function ProviderFormDialog({
             level,
           }),
           variant: "success",
+          duration: 2000,
         });
       }
       onClose();
@@ -891,10 +957,59 @@ function ProviderFormDialog({
                           onCheckedChange={(checked) => updateDraft(id, { selected: checked === true })}
                         />
                         <span className="min-w-0 flex-1 truncate font-mono text-sm">{id}</span>
+                        <button
+                          type="button"
+                          onClick={() => updateDraft(id, { advancedOpen: !draft.advancedOpen })}
+                          className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <ChevronRight
+                            className={cn(
+                              "size-3.5 transition-transform",
+                              draft.advancedOpen && "rotate-90",
+                            )}
+                          />
+                          {t("providers.wizard.advanced")}
+                        </button>
                       </div>
 
                       {draft.selected && (
                         <div className="mt-3 space-y-3 border-t border-border/60 pt-3">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Label className="text-xs text-muted-foreground">
+                              {t("providers.site.contextTier")}
+                            </Label>
+                            {CONTEXT_TIERS.map((tier) => {
+                              const active =
+                                draft.contextWindow === String(tier.context) &&
+                                draft.maxOutput === String(tier.maxOutput);
+                              return (
+                                <button
+                                  key={tier.id}
+                                  type="button"
+                                  onClick={() =>
+                                    updateDraft(
+                                      id,
+                                      active
+                                        ? { contextWindow: "", maxOutput: "" }
+                                        : {
+                                            contextWindow: String(tier.context),
+                                            maxOutput: String(tier.maxOutput),
+                                          },
+                                    )
+                                  }
+                                  className={cn(
+                                    "rounded-lg border px-2.5 py-1 text-xs transition-colors",
+                                    active
+                                      ? "border-primary bg-primary/8 text-foreground"
+                                      : "border-border text-muted-foreground hover:bg-muted/50",
+                                  )}
+                                >
+                                  {tier.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {draft.advancedOpen && (
                           <div className="flex flex-wrap items-center gap-3">
                             <div className="flex items-center gap-1.5">
                               <Label className="text-xs text-muted-foreground">
@@ -907,6 +1022,30 @@ function ProviderFormDialog({
                                 className="h-7 w-36 text-xs"
                               />
                             </div>
+                            <div className="flex items-center gap-1.5">
+                              <Label className="text-xs text-muted-foreground">
+                                {t("providers.site.maxOutputTokens")}
+                              </Label>
+                              <Input
+                                value={draft.maxOutput}
+                                onChange={(e) =>
+                                  updateDraft(id, { maxOutput: e.target.value.replace(/[^0-9]/g, "") })
+                                }
+                                placeholder={t("providers.wizard.contextWindowPlaceholder")}
+                                className="h-7 w-32 text-xs"
+                              />
+                            </div>
+                          </div>
+                          )}
+                          {draft.advancedOpen && (
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Label className="text-xs text-muted-foreground">
+                              {t("providers.site.inputTypes")}
+                            </Label>
+                            <label className="flex items-center gap-1.5 text-xs text-muted-foreground/60">
+                              <Checkbox checked disabled aria-label={t("providers.site.inputText")} />
+                              {t("providers.site.inputText")}
+                            </label>
                             <label className="flex items-center gap-1.5 text-xs">
                               <Checkbox
                                 checked={draft.supportsImage}
@@ -914,69 +1053,120 @@ function ProviderFormDialog({
                                   updateDraft(id, { supportsImage: checked === true })
                                 }
                               />
-                              {t("providers.wizard.supportsImage")}
+                              {t("providers.site.inputImage")}
+                            </label>
+                            <label className="flex items-center gap-1.5 text-xs">
+                              <Checkbox
+                                checked={draft.supportsVideo}
+                                onCheckedChange={(checked) =>
+                                  updateDraft(id, { supportsVideo: checked === true })
+                                }
+                              />
+                              {t("providers.site.inputVideo")}
+                            </label>
+                            <label className="flex items-center gap-1.5 text-xs">
+                              <Checkbox
+                                checked={draft.supportsPdf}
+                                onCheckedChange={(checked) =>
+                                  updateDraft(id, { supportsPdf: checked === true })
+                                }
+                              />
+                              {t("providers.site.inputPdf")}
                             </label>
                           </div>
+                          )}
 
+                          {draft.advancedOpen && (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Label className="text-xs text-muted-foreground">
+                              {t("providers.site.capabilities")}
+                            </Label>
+                            {(
+                              [
+                                ["capStructured", t("providers.site.capStructured")],
+                                ["capWebSearch", t("providers.site.capWebSearch")],
+                                ["capMidSystem", t("providers.site.capMidSystem")],
+                              ] as const
+                            ).map(([key, label]) => {
+                              const active = draft[key];
+                              return (
+                                <button
+                                  key={key}
+                                  type="button"
+                                  onClick={() => updateDraft(id, { [key]: !active })}
+                                  className={cn(
+                                    "rounded-lg border px-2.5 py-1 text-xs transition-colors",
+                                    active
+                                      ? "border-primary bg-primary/8 text-foreground"
+                                      : "border-border text-muted-foreground hover:bg-muted/50",
+                                  )}
+                                >
+                                  {active ? "✓ " : ""}
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          )}
+
+                          {draft.advancedOpen && (
                           <div className="space-y-1">
                             <Label className="text-xs text-muted-foreground">
                               {t("providers.wizard.reasoningLevels")}
                             </Label>
                             <div className="flex flex-wrap items-center gap-1.5">
-                              {draft.levels.map((level, index) => (
-                                <Badge
-                                  key={`${level}-${index}`}
-                                  variant="outline"
-                                  className="cursor-pointer font-mono hover:bg-destructive/10 hover:text-destructive"
-                                  onClick={() =>
-                                    updateDraft(id, {
-                                      levels: draft.levels.filter((_, i) => i !== index),
-                                    })
-                                  }
-                                >
-                                  {level} ×
-                                </Badge>
-                              ))}
-                              <Input
-                                value={draft.levelInput}
-                                onChange={(e) => updateDraft(id, { levelInput: e.target.value })}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    const value = draft.levelInput.trim();
-                                    if (value && !draft.levels.includes(value)) {
+                              {((): string[] => {
+                                const candidates = defaultLevels(protocol);
+                                // 已保存配置里可能有候选之外的自定义档位，追加在尾部保留
+                                return Array.from(
+                                  new Set([...candidates, ...draft.levels]),
+                                );
+                              })().map((level) => {
+                                const active = draft.levels.includes(level);
+                                return (
+                                  <button
+                                    key={level}
+                                    type="button"
+                                    onClick={() =>
                                       updateDraft(id, {
-                                        levels: [...draft.levels, value],
-                                        levelInput: "",
-                                      });
+                                        levels: active
+                                          ? draft.levels.filter((l) => l !== level)
+                                          : Array.from(
+                                              new Set([...draft.levels, level]),
+                                            ),
+                                      })
                                     }
-                                  }
-                                }}
-                                placeholder={t("providers.wizard.addLevel")}
-                                className="h-6 w-24 text-xs"
-                              />
+                                    className={cn(
+                                      "rounded-lg border px-2.5 py-1 font-mono text-xs transition-colors",
+                                      active
+                                        ? "border-primary bg-primary/8 text-foreground"
+                                        : "border-border text-muted-foreground hover:bg-muted/50",
+                                    )}
+                                  >
+                                    {level}
+                                  </button>
+                                );
+                              })}
                             </div>
                             <p className="text-[11px] text-muted-foreground">
                               {t("providers.wizard.reasoningLevelsDesc")}
                             </p>
                           </div>
+                          )}
 
-                          <details className="group">
-                            <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
-                              {t("providers.wizard.advanced")}
-                            </summary>
-                            <div className="mt-1.5 space-y-1">
-                              <Input
-                                value={draft.reasoningMap}
-                                onChange={(e) => updateDraft(id, { reasoningMap: e.target.value })}
-                                placeholder={t("providers.wizard.reasoningMapPlaceholder")}
-                                className="font-mono text-xs"
-                              />
-                              <p className="text-[11px] text-muted-foreground">
-                                {t("providers.wizard.reasoningMapDesc")}
-                              </p>
-                            </div>
-                          </details>
+                          {draft.advancedOpen && (
+                          <div className="space-y-1">
+                            <Input
+                              value={draft.reasoningMap}
+                              onChange={(e) => updateDraft(id, { reasoningMap: e.target.value })}
+                              placeholder={t("providers.wizard.reasoningMapPlaceholder")}
+                              className="font-mono text-xs"
+                            />
+                            <p className="text-[11px] text-muted-foreground">
+                              {t("providers.wizard.reasoningMapDesc")}
+                            </p>
+                          </div>
+                          )}
                         </div>
                       )}
                     </div>

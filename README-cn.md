@@ -83,6 +83,8 @@ cargo check --manifest-path src-tauri/Cargo.toml  # Rust 检查
 pnpm tauri build                                  # 生产构建
 ```
 
+> Windows 打包与发布的完整教程（含 Git Bash 链接器冲突等常见坑）见 [docs/RELEASE-windows.md](docs/RELEASE-windows.md)。
+
 ---
 
 ## 项目结构

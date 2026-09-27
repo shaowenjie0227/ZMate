@@ -107,7 +107,21 @@ export function ApiKeysPage() {
   };
 
   const copyKey = async (token: NewApiTokenInfo) => {
-    const full = token.key.startsWith("sk-") ? token.key : `sk-${token.key}`;
+    // 新版 new-api 列表返回的 key 是脱敏串（tzPX**********UpRs），需向站点专用端点取明文
+    let raw = token.key;
+    if (!raw || raw.includes("*")) {
+      const revealed = await api.newapiRevealTokenKey(token.id, null, null);
+      raw = revealed.data ?? "";
+    }
+    if (!raw || raw.includes("*")) {
+      toast({
+        title: t("apiKeys.copyMaskedTitle"),
+        description: t("apiKeys.copyMaskedDesc"),
+        variant: "destructive",
+      });
+      return;
+    }
+    const full = raw.startsWith("sk-") ? raw : `sk-${raw}`;
     await navigator.clipboard.writeText(full);
     toast({ title: t("apiKeys.copied"), variant: "success" });
   };

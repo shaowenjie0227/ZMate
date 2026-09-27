@@ -449,3 +449,19 @@ body {
   }
 }
 
+
+/* 使用日志：Z 轨迹收笔增亮 */
+.z-trace-flash {
+  animation: z-trace-flash 180ms ease-out;
+}
+@keyframes z-trace-flash {
+  0% {
+    stroke-opacity: 0.55;
+  }
+  40% {
+    stroke-opacity: 1;
+  }
+  100% {
+    stroke-opacity: 0.85;
+  }
+}

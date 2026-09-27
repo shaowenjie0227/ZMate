@@ -515,7 +515,7 @@ pub fn login_with_password(
     Ok((token, login_user_id))
 }
 
-/// 当前账号的令牌列表（含 key 明文，供前端选择已有密钥）
+/// 当前账号的令牌列表（key 字段可能被站点脱敏，见 reveal_token_key）
 pub fn list_tokens(
     base_url: &str,
     access_token: &str,
@@ -529,6 +529,41 @@ pub fn list_tokens(
         tokens = fetch_token_page(&client, &base, access_token, user_id, 1)?;
     }
     Ok(tokens)
+}
+
+/// 取回单个令牌的 key 明文。
+///
+/// 新版 new-api 的列表 / 详情 / 搜索接口一律对 key 脱敏
+/// （`tzPX**********UpRs` 形态），明文必须走专用端点
+/// `POST /api/token/{id}/key`（仅令牌所有者可用，且有限流）。
+/// 站点过旧没有该端点时返回 404，由调用方回落引导。
+pub fn reveal_token_key(
+    base_url: &str,
+    access_token: &str,
+    user_id: Option<i64>,
+    token_id: i64,
+    timeout: Duration,
+) -> Result<String, CoreError> {
+    let base = normalize_base(base_url);
+    let client = build_client(timeout)?;
+    let url = format!("{base}/api/token/{token_id}/key");
+    let response = authed_request(&client, reqwest::Method::POST, &url, access_token, user_id)
+        .send()
+        .map_err(|e| CoreError::OperationFailed(format!("请求失败（{url}）：{e}")))?;
+    let status = response.status();
+    let body_text = response.text().unwrap_or_default();
+    let data = parse_envelope(status, &body_text, &url)?;
+    let key = data
+        .get("key")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if key.is_empty() || key.contains('*') {
+        return Err(CoreError::OperationFailed(
+            "站点未返回明文 key（响应缺失或仍为脱敏值）".into(),
+        ));
+    }
+    Ok(key)
 }
 
 /// 可选分组与计费倍率：/api/user/groups 返回 分组名 → 倍率 映射（或数组）
@@ -581,11 +616,15 @@ pub fn list_groups(
     Ok(groups)
 }
 
-/// 当前账号分组可用模型：/api/user/models
+/// 当前账号可用模型：/api/user/models。
+///
+/// 指定 group 时结合 /api/pricing 的 enable_groups 过滤——站点把模型挂在不同
+/// 分组（渠道）上，按分组接入时只应展示该分组实际可调用的模型。
 pub fn list_models(
     base_url: &str,
     access_token: &str,
     user_id: Option<i64>,
+    group: Option<&str>,
     timeout: Duration,
 ) -> Result<Vec<String>, CoreError> {
     let base = normalize_base(base_url);
@@ -611,9 +650,137 @@ pub fn list_models(
             }
         })
         .collect();
+
+    if let Some(group) = group.map(str::trim).filter(|g| !g.is_empty()) {
+        // /api/pricing 公开端点：data 为 [{model_name, enable_groups, ...}]
+        let pricing = api_get(&client, &format!("{base}/api/pricing"), access_token, user_id)?;
+        let allowed: std::collections::HashSet<String> = pricing
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("enable_groups")
+                    .and_then(Value::as_array)
+                    .map(|groups| {
+                        groups
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .any(|g| g == group)
+                    })
+                    .unwrap_or(false)
+            })
+            .filter_map(|entry| {
+                entry
+                    .get("model_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        ids.retain(|id| allowed.contains(id));
+    }
+
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+/// 推荐计划信息（数据取自 /api/user/self 的 aff_* 字段）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewApiAffiliateInfo {
+    pub aff_code: String,
+    pub referral_url: String,
+    /// 待划转奖励（quota 原始单位）
+    pub pending_quota: i64,
+    /// 已历史划转奖励
+    pub history_quota: i64,
+    pub invite_count: i64,
+}
+
+/// 已邀请用户 / 推荐记录分页（items 字段名因站点版本而异，保持透传）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewApiAffiliatePage {
+    pub page: i64,
+    pub page_size: i64,
+    pub total: i64,
+    pub items: Vec<Value>,
+}
+
+/// 推荐计划：邀请码 / 推荐链接 / 待确认与累计奖励 / 邀请人数
+pub fn affiliate_info(
+    base_url: &str,
+    access_token: &str,
+    user_id: Option<i64>,
+    timeout: Duration,
+) -> Result<NewApiAffiliateInfo, CoreError> {
+    let base = normalize_base(base_url);
+    let client = build_client(timeout)?;
+    let data = api_get(&client, &format!("{base}/api/user/self"), access_token, user_id)?;
+    let aff_code = data
+        .get("aff_code")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    Ok(NewApiAffiliateInfo {
+        referral_url: if aff_code.is_empty() {
+            String::new()
+        } else {
+            format!("{base}/sign-up?aff={aff_code}")
+        },
+        pending_quota: data.get("aff_quota").map_or(0, as_i64),
+        history_quota: data.get("aff_history_quota").map_or(0, as_i64),
+        invite_count: data.get("aff_count").map_or(0, as_i64),
+        aff_code,
+    })
+}
+
+/// 已邀请用户列表（新版 new-api：GET /api/user/invited-users）
+pub fn invited_users(
+    base_url: &str,
+    access_token: &str,
+    user_id: Option<i64>,
+    page: i64,
+    page_size: i64,
+    timeout: Duration,
+) -> Result<NewApiAffiliatePage, CoreError> {
+    let base = normalize_base(base_url);
+    let client = build_client(timeout)?;
+    let data = api_get(
+        &client,
+        &format!("{base}/api/user/invited-users?p={page}&page_size={page_size}"),
+        access_token,
+        user_id,
+    )?;
+    Ok(NewApiAffiliatePage {
+        page: data.get("page").map_or(page, as_i64),
+        page_size: data.get("page_size").map_or(page_size, as_i64),
+        total: data.get("total").map_or(0, as_i64),
+        items: data.get("items").and_then(Value::as_array).cloned().unwrap_or_default(),
+    })
+}
+
+/// 划转邀请奖励到余额：POST /api/user/aff_transfer {"quota": N}（quota 原始单位）
+pub fn transfer_aff_quota(
+    base_url: &str,
+    access_token: &str,
+    user_id: Option<i64>,
+    quota: i64,
+    timeout: Duration,
+) -> Result<(), CoreError> {
+    let base = normalize_base(base_url);
+    let client = build_client(timeout)?;
+    let url = format!("{base}/api/user/aff_transfer");
+    let response = authed_request(&client, reqwest::Method::POST, &url, access_token, user_id)
+        .json(&json!({ "quota": quota }))
+        .send()
+        .map_err(|e| CoreError::OperationFailed(format!("请求失败（{url}）：{e}")))?;
+    let status = response.status();
+    let body_text = response.text().unwrap_or_default();
+    parse_envelope(status, &body_text, &url)?;
+    Ok(())
 }
 
 /// 创建令牌并取回 key 明文。
@@ -683,18 +850,23 @@ pub fn create_token(
     matched.sort_by_key(|t| -t.created_time);
     let detail = match matched.first() {
         Some(first) => {
-            // 优先取 key 明文非空的那条；都没有则至少回传令牌存在这一事实
-            match matched.iter().find(|t| !t.key.is_empty()) {
-                Some(t) => NewApiTokenDetail {
-                    id: t.id,
-                    name: t.name.clone(),
-                    key: t.key.clone(),
-                },
-                None => NewApiTokenDetail {
-                    id: first.id,
-                    name: first.name.clone(),
-                    key: String::new(),
-                },
+            // 新版 new-api 的列表 / 搜索响应 key 一律脱敏，需走专用端点取明文；
+            // 取不到（站点过旧 / 限流）时回落旧字段，仍无则回传空串由前端引导补填
+            let revealed = reveal_token_key(base_url, access_token, user_id, first.id, timeout)
+                .or_else(|_| {
+                    matched
+                        .iter()
+                        .find(|t| !t.key.is_empty() && !t.key.contains('*'))
+                        .map(|t| Ok(t.key.clone()))
+                        .unwrap_or_else(|| {
+                            Err(CoreError::OperationFailed("no plaintext key".into()))
+                        })
+                })
+                .unwrap_or_default();
+            NewApiTokenDetail {
+                id: first.id,
+                name: first.name.clone(),
+                key: revealed,
             }
         }
         None => NewApiTokenDetail {

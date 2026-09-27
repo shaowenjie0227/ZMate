@@ -1,7 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ExternalLink, Loader2, RefreshCw, Ticket } from "lucide-react";
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
+  Share2,
+  Ticket,
+  Users,
+} from "lucide-react";
 
 import { api } from "@/lib/api";
 import { useBusyAction } from "@/hooks/use-busy-action";
@@ -35,12 +44,6 @@ export function WalletPage() {
   const stats = walletQuery.data?.data.stats ?? null;
   const connected = walletQuery.data?.data.connected ?? false;
 
-  const refresh = async () => {
-    await refreshAction.run(async () => {
-      await walletQuery.refetch();
-    });
-  };
-
   const redeemMutation = useMutation({
     mutationFn: () => api.newapiRedeem(code.trim()),
     onSuccess: (response) => {
@@ -67,6 +70,74 @@ export function WalletPage() {
 
   const openShop = async () => {
     await api.openPath(CARD_SHOP_URL);
+  };
+
+  // ---- 推荐计划 / 已邀请用户 ----
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [transferAmount, setTransferAmount] = useState("");
+  const [inviteePage, setInviteePage] = useState(1);
+  const INVITEE_PAGE_SIZE = 10;
+
+  const affiliateQuery = useQuery({
+    queryKey: ["affiliate"],
+    queryFn: () => api.newapiAffiliateInfo(),
+    staleTime: 30_000,
+  });
+  const affiliate = affiliateQuery.data?.data ?? null;
+  const invitedQuery = useQuery({
+    queryKey: ["invited-users", inviteePage],
+    queryFn: () => api.newapiInvitedUsers(inviteePage, INVITEE_PAGE_SIZE),
+    staleTime: 30_000,
+  });
+  const invited = invitedQuery.data?.data ?? null;
+
+  const copyReferralLink = async () => {
+    if (!affiliate?.referralUrl) return;
+    await navigator.clipboard.writeText(affiliate.referralUrl);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 1500);
+  };
+
+  const transferMutation = useMutation({
+    mutationFn: (quota: number) => api.newapiTransferAffQuota(quota),
+    onSuccess: () => {
+      toast({ title: t("wallet.transferSuccess"), variant: "success" });
+      setTransferAmount("");
+      void queryClient.invalidateQueries({ queryKey: ["affiliate"] });
+      void queryClient.invalidateQueries({ queryKey: ["wallet"] });
+      void queryClient.invalidateQueries({ queryKey: ["site-usage"] });
+    },
+    onError: (error) => {
+      toast({
+        title: t("wallet.transferFailed"),
+        description: error instanceof Error ? error.message : t("common.toastErrorGenericDesc"),
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleTransfer = () => {
+    if (!affiliate) return;
+    const unit = stats && stats.quotaPerUnit > 0 ? stats.quotaPerUnit : 500_000;
+    const usd = Number.parseFloat(transferAmount);
+    if (!Number.isFinite(usd) || usd <= 0) {
+      toast({ title: t("wallet.invalidAmount"), variant: "destructive" });
+      return;
+    }
+    const quota = Math.round(usd * unit);
+    if (quota > affiliate.pendingQuota) {
+      toast({ title: t("wallet.insufficientAmount"), variant: "destructive" });
+      return;
+    }
+    transferMutation.mutate(quota);
+  };
+
+  const refresh = async () => {
+    await refreshAction.run(async () => {
+      await walletQuery.refetch();
+      await affiliateQuery.refetch();
+      await invitedQuery.refetch();
+    });
   };
 
   return (
@@ -165,8 +236,165 @@ export function WalletPage() {
               </p>
             </BentoCard>
           </div>
+
+          {/* 推荐计划 */}
+          {affiliate && (
+            <BentoCard className="p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Share2 className="size-4 text-violet-500" />
+                    <h3 className="font-semibold">{t("wallet.affiliateTitle")}</h3>
+                  </div>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {t("wallet.affiliateDesc")}
+                  </p>
+                </div>
+                <div className="flex items-center gap-6">
+                  <AffiliateStat
+                    label={t("wallet.affiliatePending")}
+                    value={money(affiliate.pendingQuota, stats.quotaPerUnit)}
+                  />
+                  <AffiliateStat
+                    label={t("wallet.affiliateTotal")}
+                    value={money(
+                      affiliate.pendingQuota + affiliate.historyQuota,
+                      stats.quotaPerUnit,
+                    )}
+                  />
+                  <AffiliateStat
+                    label={t("wallet.affiliateInvites")}
+                    value={String(affiliate.inviteCount)}
+                  />
+                </div>
+              </div>
+
+              {affiliate.referralUrl && (
+                <div className="mt-4 flex items-center gap-2">
+                  <Input
+                    readOnly
+                    value={affiliate.referralUrl}
+                    onFocus={(e) => e.currentTarget.select()}
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => void copyReferralLink()}
+                  >
+                    {copiedLink ? <Check /> : <Copy />}
+                    {copiedLink
+                      ? t("wallet.affiliateCopied")
+                      : t("wallet.affiliateCopyAction")}
+                  </Button>
+                </div>
+              )}
+
+              <div className="mt-3 flex items-center gap-2">
+                <Input
+                  value={transferAmount}
+                  onChange={(e) => setTransferAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+                  placeholder={t("wallet.transferAmountPlaceholder")}
+                  className="font-mono"
+                  inputMode="decimal"
+                />
+                <Button
+                  className="shrink-0"
+                  disabled={
+                    affiliate.pendingQuota <= 0 || transferMutation.isPending
+                  }
+                  onClick={handleTransfer}
+                >
+                  {transferMutation.isPending && <Loader2 className="animate-spin" />}
+                  {transferMutation.isPending ? t("wallet.transferring") : t("wallet.transferAction")}
+                </Button>
+              </div>
+            </BentoCard>
+          )}
+
+          {/* 已邀请用户 */}
+          <BentoCard className="p-5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Users className="size-4 text-sky-500" />
+                <h3 className="font-semibold">{t("wallet.invitedTitle")}</h3>
+              </div>
+              {invited && invited.total > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {t("wallet.invitedTotal", { count: invited.total })}
+                </span>
+              )}
+            </div>
+            {invited && invited.items.length > 0 ? (
+              <>
+                <div className="mt-3 divide-y divide-border">
+                  {invited.items.map((item, index) => (
+                    <InvitedUserRow key={index} item={item} />
+                  ))}
+                </div>
+                {(invited.page > 1 || invited.page * invited.pageSize < invited.total) && (
+                  <div className="mt-3 flex items-center justify-end gap-2">
+                    <span className="text-xs text-muted-foreground">
+                      {invited.page} / {Math.max(1, Math.ceil(invited.total / invited.pageSize))}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={invited.page <= 1}
+                      onClick={() => setInviteePage((p) => Math.max(1, p - 1))}
+                    >
+                      {t("wallet.pagePrev")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={invited.page * invited.pageSize >= invited.total}
+                      onClick={() => setInviteePage((p) => p + 1)}
+                    >
+                      {t("wallet.pageNext")}
+                    </Button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="mt-6 py-8 text-center">
+                <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-muted">
+                  <Users className="size-5 text-muted-foreground" />
+                </div>
+                <p className="mt-3 text-sm font-medium">{t("wallet.invitedEmpty")}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{t("wallet.invitedEmptyDesc")}</p>
+              </div>
+            )}
+          </BentoCard>
         </>
       )}
+    </div>
+  );
+}
+
+function AffiliateStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="text-center">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p className="mt-0.5 text-lg font-bold tabular-nums">{value}</p>
+    </div>
+  );
+}
+
+function InvitedUserRow({ item }: { item: Record<string, unknown> }) {
+  const name = String(
+    item.username ?? item.name ?? item.display_name ?? item.email ?? `#${String(item.id ?? "?")}`,
+  );
+  const ts = Number(item.created_time ?? item.created_at ?? item.register_time ?? 0);
+  const joined =
+    ts > 0
+      ? new Date(ts * 1000).toLocaleString(undefined, { hour12: false })
+      : "";
+  return (
+    <div className="flex items-center justify-between py-2">
+      <span className="truncate text-sm">{name}</span>
+      {joined && <span className="text-xs text-muted-foreground">{joined}</span>}
     </div>
   );
 }

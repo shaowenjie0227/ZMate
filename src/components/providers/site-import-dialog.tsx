@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   ArrowLeft,
+  ChevronDown,
+  ChevronUp,
   Eye,
   EyeOff,
   KeyRound,
@@ -46,6 +48,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CONTEXT_TIERS, type ContextTierId } from "@/lib/model-tiers";
 import { cn } from "@/lib/utils";
 
 /** 面板绑定的中转站预设（与 providers-page 的 AISPOT_BASE 保持一致） */
@@ -59,15 +62,59 @@ const PROTOCOLS: ProviderApiType[] = [
 type ImportPath = "existing" | "create" | "custom";
 type Step = "choose" | "pick" | "group" | "config" | "finish";
 
-function defaultLevels(protocol: ProviderApiType): string[] {
+/** 各协议可选的推理等级（从低到高） */
+function protocolReasoningLevels(protocol: ProviderApiType): string[] {
   return protocol === "anthropic-messages"
     ? ["off", "low", "medium", "high"]
-    : ["low", "medium", "high"];
+    : ["none", "low", "medium", "high", "xhigh", "max"];
 }
 
-/** anthropic 协议挂站点根路径，OpenAI 系挂 /v1 */
+
+
+/** path 里是否已经有 /v1 这类版本段（有则不再追加，避免拼成 /v1/v1） */
+function hasVersionSegment(base: string): boolean {
+  const withoutScheme = base.split("://").pop() ?? base;
+  const slash = withoutScheme.indexOf("/");
+  const path = slash === -1 ? "" : withoutScheme.slice(slash);
+  return path.split("/").some((seg) => /^v[0-9]+$/i.test(seg));
+}
+
+/** anthropic 协议挂站点根路径，OpenAI 系挂 /v1；站点地址已带版本段时原样使用 */
 function presetBaseUrlFor(siteBase: string, protocol: ProviderApiType): string {
-  return protocol === "anthropic-messages" ? siteBase : `${siteBase}/v1`;
+  const trimmed = siteBase.trim().replace(/\/+$/, "");
+  if (protocol === "anthropic-messages" || hasVersionSegment(trimmed)) {
+    return trimmed;
+  }
+  return `${trimmed}/v1`;
+}
+
+/** 完成页中每个模型独立持有的注入配置 */
+interface ImportModelConfig {
+  contextTier: ContextTierId | null;
+  contextWindow: string;
+  maxOutput: string;
+  inputImage: boolean;
+  inputVideo: boolean;
+  inputPdf: boolean;
+  capStructured: boolean;
+  capWebSearch: boolean;
+  capMidSystem: boolean;
+  levels: string[];
+}
+
+function emptyImportConfig(protocol: ProviderApiType): ImportModelConfig {
+  return {
+    contextTier: "500k",
+    contextWindow: "500000",
+    maxOutput: "192000",
+    inputImage: true,
+    inputVideo: false,
+    inputPdf: false,
+    capStructured: false,
+    capWebSearch: false,
+    capMidSystem: false,
+    levels: protocolReasoningLevels(protocol),
+  };
 }
 
 function normalizeKey(raw: string): string {
@@ -100,6 +147,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
   const [connectError, setConnectError] = useState<string | null>(null);
 
   // 「我已有 key」
+  const [pathLoading, setPathLoading] = useState<ImportPath | null>(null);
   const [tokens, setTokens] = useState<NewApiTokenInfo[] | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState<number | null>(null);
 
@@ -124,6 +172,27 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [manualInput, setManualInput] = useState("");
   const [modelsInfo, setModelsInfo] = useState<string | null>(null);
+
+  // 模型导入配置：上下文档位 / 更多设置 / 推理等级
+  const [modelConfigs, setModelConfigs] = useState<Record<string, ImportModelConfig>>({});
+  const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
+
+  const ensureModelConfig = (id: string): ImportModelConfig =>
+    modelConfigs[id] ?? emptyImportConfig(protocol);
+  const updateModelConfig = (id: string, patch: Partial<ImportModelConfig>) => {
+    setModelConfigs((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] ?? emptyImportConfig(protocol)), ...patch },
+    }));
+  };
+  const toggleModelExpanded = (id: string) => {
+    setExpandedModels((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const { data: systemInfo } = useQuery({
     queryKey: ["system-info"],
@@ -159,6 +228,8 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
     setSelectedModels(new Set());
     setManualInput("");
     setModelsInfo(null);
+    setModelConfigs({});
+    setExpandedModels(new Set());
   }, [open]);
 
   useEffect(() => {
@@ -201,6 +272,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
   ) => {
     const base = (conn?.base ?? siteBase).trim();
     const token = conn?.token ?? null;
+    setPathLoading(pathArg);
     try {
       if (pathArg === "existing") {
         const res = await api.newapiListTokens(base, token);
@@ -221,6 +293,8 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
       setUsingStored(false);
       setConnectError(error instanceof Error ? error.message : t("common.toastErrorGenericDesc"));
       setLoginOpen(true);
+    } finally {
+      setPathLoading(null);
     }
   };
 
@@ -252,6 +326,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
         protocol: "openai-responses",
         baseUrl: presetBaseUrlFor(siteBase.trim(), "openai-responses"),
         source: "site",
+        group: selectedGroup || null,
       });
       if (!detail.key) {
         toast({
@@ -276,6 +351,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
     protocol: ProviderApiType;
     baseUrl: string;
     source: "site" | "key";
+    group?: string | null;
   }) => {
     setProviderName(opts.name);
     setProtocol(opts.protocol);
@@ -284,19 +360,21 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
     setSelectedModels(new Set());
     setManualInput("");
     setModelsInfo(null);
+    setModelConfigs({});
+    setExpandedModels(new Set());
     setStep("finish");
 
     if (opts.source === "site") {
-      void fetchSiteModels();
+      void fetchSiteModels(opts.group ?? null);
     } else {
       void fetchKeyModels(opts.protocol, opts.baseUrl);
     }
   };
 
-  const fetchSiteModels = async () => {
+  const fetchSiteModels = async (group: string | null) => {
     setModelsInfo(t("providers.site.fetchingModels"));
     try {
-      const res = await api.newapiListModels(siteBase.trim(), null);
+      const res = await api.newapiListModels(siteBase.trim(), null, group);
       applyModels(res.data);
     } catch {
       setModelsInfo(t("providers.site.siteFetchModelsFailed"));
@@ -320,25 +398,44 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
     }
     setModels(items);
     setSelectedModels(new Set(items));
+    setModelConfigs((prev) => {
+      const next: Record<string, ImportModelConfig> = {};
+      for (const id of items) next[id] = prev[id] ?? emptyImportConfig(protocol);
+      return next;
+    });
+    setExpandedModels(new Set());
     setModelsInfo(t("providers.wizard.fetchSuccess", { count: items.length }));
   };
 
   const upsertMutation = useMutation({
     mutationFn: () => {
+      const levelOrder = protocolReasoningLevels(protocol);
       const selectedInputs: ProviderModelInput[] = models
         .filter((id) => selectedModels.has(id))
-        .map((id) => ({
-          modelId: id,
-          contextWindow: null,
-          supportsImage: null,
-          reasoningLevels: defaultLevels(protocol),
-          reasoningMap: null,
-        }));
+        .map((id) => {
+          const cfg = modelConfigs[id] ?? emptyImportConfig(protocol);
+          const contextWindow = Number.parseInt(cfg.contextWindow, 10);
+          const maxOutput = Number.parseInt(cfg.maxOutput, 10);
+          const levels = levelOrder.filter((level) => cfg.levels.includes(level));
+          return {
+            modelId: id,
+            contextWindow: Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : null,
+            supportsImage: cfg.inputImage ? true : null,
+            maxOutputTokens: Number.isFinite(maxOutput) && maxOutput > 0 ? maxOutput : null,
+            supportsVideo: cfg.inputVideo ? true : null,
+            supportsPdf: cfg.inputPdf ? true : null,
+            supportsJsonSchemaOutput: cfg.capStructured ? true : null,
+            supportsNativeWebSearch: cfg.capWebSearch ? true : null,
+            supportsMidConversationSystem: cfg.capMidSystem ? true : null,
+            reasoningLevels: levels,
+            reasoningMap: null,
+          };
+        });
       return api.upsertProvider({
         providerId: null,
         providerName: providerName.trim(),
         apiType: protocol,
-        baseUrl: finishBaseUrl.trim(),
+        baseUrl: presetBaseUrlFor(finishBaseUrl, protocol),
         apiKey: apiKey.trim(),
         models: selectedInputs,
       });
@@ -379,6 +476,13 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
 
   const switchFinishProtocol = (next: ProviderApiType) => {
     setProtocol(next);
+    setModelConfigs((prev) => {
+      const nextConfigs: Record<string, ImportModelConfig> = {};
+      for (const [id, cfg] of Object.entries(prev)) {
+        nextConfigs[id] = { ...cfg, levels: protocolReasoningLevels(next) };
+      }
+      return nextConfigs;
+    });
     setFinishBaseUrl((prev) =>
       siteInfo && (prev === "" || prev.startsWith(siteBase.trim().replace(/\/+$/, "")))
         ? presetBaseUrlFor(siteBase.trim(), next)
@@ -398,6 +502,13 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
         if (!merged.includes(id)) merged.push(id);
       }
       return merged;
+    });
+    setModelConfigs((prev) => {
+      const next = { ...prev };
+      for (const id of ids) {
+        if (!next[id]) next[id] = emptyImportConfig(protocol);
+      }
+      return next;
     });
     setSelectedModels((prev) => {
       const next = new Set(prev);
@@ -481,6 +592,8 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                 icon={<KeyRound className="size-5 text-sky-500" />}
                 title={t("providers.site.existingTitle")}
                 desc={t("providers.site.existingDesc")}
+                loading={pathLoading === "existing"}
+                disabled={pathLoading !== null}
                 onClick={() => {
                   setPath("existing");
                   if (usingStored) void loadPathData("existing");
@@ -494,6 +607,8 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                 icon={<Sparkles className="size-5 text-violet-500" />}
                 title={t("providers.site.createTitle")}
                 desc={t("providers.site.createDesc")}
+                loading={pathLoading === "create"}
+                disabled={pathLoading !== null}
                 onClick={() => {
                   setPath("create");
                   if (usingStored) void loadPathData("create");
@@ -507,6 +622,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                 icon={<SlidersHorizontal className="size-5 text-amber-500" />}
                 title={t("providers.site.customTitle")}
                 desc={t("providers.site.customDesc")}
+                disabled={pathLoading !== null}
                 onClick={() => {
                   setPath("custom");
                   setStep("config");
@@ -524,7 +640,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                 {t("providers.site.pickEmpty")}
               </p>
             ) : (
-              <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+              <div className="max-h-[30rem] space-y-2 overflow-y-auto pr-1">
                 {(tokens ?? []).map((token) => {
                   const usable = isTokenUsable(token);
                   const selected = selectedTokenId === token.id;
@@ -535,7 +651,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                       disabled={!usable || !token.key}
                       onClick={() => setSelectedTokenId(token.id)}
                       className={cn(
-                        "w-full rounded-xl border px-3 py-2.5 text-left transition-colors",
+                        "w-full rounded-xl border px-3 py-2 text-left transition-colors",
                         selected ? "border-primary bg-primary/8" : "border-border hover:bg-muted/50",
                         !usable && "cursor-not-allowed opacity-50",
                       )}
@@ -720,23 +836,219 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                       : t("providers.site.selectAll")}
                   </Button>
                 </div>
-                <div className="max-h-52 space-y-1.5 overflow-y-auto rounded-xl border border-border p-2">
-                  {models.map((id) => (
-                    <label key={id} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-muted/50">
-                      <Checkbox
-                        checked={selectedModels.has(id)}
-                        onCheckedChange={(checked) =>
-                          setSelectedModels((prev) => {
-                            const next = new Set(prev);
-                            if (checked === true) next.add(id);
-                            else next.delete(id);
-                            return next;
-                          })
-                        }
-                      />
-                      <span className="min-w-0 flex-1 truncate font-mono text-sm">{id}</span>
-                    </label>
-                  ))}
+                <div className="max-h-[26rem] space-y-1.5 overflow-y-auto rounded-xl border border-border p-2">
+                  {models.map((id) => {
+                    const cfg = ensureModelConfig(id);
+                    const expanded = expandedModels.has(id);
+                    const activeTier = CONTEXT_TIERS.find(
+                      (tier) =>
+                        cfg.contextWindow === String(tier.context) &&
+                        cfg.maxOutput === String(tier.maxOutput),
+                    );
+                    return (
+                      <div
+                        key={id}
+                        className={cn(
+                          "rounded-xl border px-2 py-1.5 transition-colors",
+                          expanded
+                            ? "border-primary/40 bg-primary/4"
+                            : "border-transparent hover:bg-muted/40",
+                        )}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            checked={selectedModels.has(id)}
+                            onCheckedChange={(checked) =>
+                              setSelectedModels((prev) => {
+                                const next = new Set(prev);
+                                if (checked === true) next.add(id);
+                                else next.delete(id);
+                                return next;
+                              })
+                            }
+                          />
+                          <span className="min-w-0 flex-1 truncate font-mono text-sm">{id}</span>
+                          <button
+                            type="button"
+                            onClick={() => toggleModelExpanded(id)}
+                            className={cn(
+                              "flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
+                              expanded
+                                ? "text-foreground"
+                                : "text-muted-foreground hover:text-foreground",
+                            )}
+                          >
+                            {expanded ? (
+                              <ChevronUp className="size-3.5" />
+                            ) : (
+                              <ChevronDown className="size-3.5" />
+                            )}
+                            {t("providers.site.moreSettings")}
+                          </button>
+                        </div>
+                        {expanded && (
+                          <div className="mt-2 space-y-2.5 border-t border-border/60 pt-2.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Label className="text-xs text-muted-foreground">
+                                {t("providers.site.contextTier")}
+                              </Label>
+                              {CONTEXT_TIERS.map((tier) => {
+                                const active = activeTier?.id === tier.id;
+                                return (
+                                  <button
+                                    key={tier.id}
+                                    type="button"
+                                    onClick={() =>
+                                      updateModelConfig(
+                                        id,
+                                        active
+                                          ? { contextTier: null, contextWindow: "", maxOutput: "" }
+                                          : {
+                                              contextTier: tier.id,
+                                              contextWindow: String(tier.context),
+                                              maxOutput: String(tier.maxOutput),
+                                            },
+                                      )
+                                    }
+                                    className={cn(
+                                      "rounded-lg border px-2 py-0.5 text-[11px] transition-colors",
+                                      active
+                                        ? "border-primary bg-primary/8 text-foreground"
+                                        : "border-border text-muted-foreground hover:bg-muted/50",
+                                    )}
+                                  >
+                                    {tier.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="flex gap-2">
+                              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                <span className="shrink-0 text-[11px] text-muted-foreground">
+                                  {t("providers.site.contextWindow")}
+                                </span>
+                                <Input
+                                  value={cfg.contextWindow}
+                                  onChange={(e) =>
+                                    updateModelConfig(id, {
+                                      contextWindow: e.target.value.replace(/[^0-9]/g, ""),
+                                    })
+                                  }
+                                  className="h-7 min-w-0 flex-1 font-mono text-xs"
+                                  inputMode="numeric"
+                                  placeholder={t("providers.site.contextWindowPlaceholder")}
+                                />
+                              </div>
+                              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                <span className="shrink-0 text-[11px] text-muted-foreground">
+                                  {t("providers.site.maxOutputTokens")}
+                                </span>
+                                <Input
+                                  value={cfg.maxOutput}
+                                  onChange={(e) =>
+                                    updateModelConfig(id, {
+                                      maxOutput: e.target.value.replace(/[^0-9]/g, ""),
+                                    })
+                                  }
+                                  className="h-7 min-w-0 flex-1 font-mono text-xs"
+                                  inputMode="numeric"
+                                  placeholder={t("providers.site.maxOutputPlaceholder")}
+                                />
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Label className="text-xs text-muted-foreground">
+                                {t("providers.site.inputTypes")}
+                              </Label>
+                              {(["inputImage", "inputVideo", "inputPdf"] as const).map((key) => {
+                                const active = cfg[key];
+                                return (
+                                  <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() =>
+                                      updateModelConfig(id, {
+                                        [key]: !active,
+                                      } as Partial<ImportModelConfig>)
+                                    }
+                                    className={cn(
+                                      "rounded-lg border px-2 py-0.5 text-[11px] transition-colors",
+                                      active
+                                        ? "border-primary bg-primary/8 text-foreground"
+                                        : "border-border text-muted-foreground hover:bg-muted/50",
+                                    )}
+                                  >
+                                    {active ? "已选 " : ""}
+                                    {t(`providers.site.${key}`)}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Label className="text-xs text-muted-foreground">
+                                {t("providers.site.capabilities")}
+                              </Label>
+                              {(
+                                ["capStructured", "capWebSearch", "capMidSystem"] as const
+                              ).map((key) => {
+                                const active = cfg[key];
+                                return (
+                                  <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() =>
+                                      updateModelConfig(id, {
+                                        [key]: !active,
+                                      } as Partial<ImportModelConfig>)
+                                    }
+                                    className={cn(
+                                      "rounded-lg border px-2 py-0.5 text-[11px] transition-colors",
+                                      active
+                                        ? "border-primary bg-primary/8 text-foreground"
+                                        : "border-border text-muted-foreground hover:bg-muted/50",
+                                    )}
+                                  >
+                                    {active ? "已选 " : ""}
+                                    {t(`providers.site.${key}`)}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Label className="text-xs text-muted-foreground">
+                                {t("providers.site.reasoningLevels")}
+                              </Label>
+                              {protocolReasoningLevels(protocol).map((level) => {
+                                const active = cfg.levels.includes(level);
+                                return (
+                                  <button
+                                    key={level}
+                                    type="button"
+                                    onClick={() =>
+                                      updateModelConfig(id, {
+                                        levels: active
+                                          ? cfg.levels.filter((l) => l !== level)
+                                          : [...cfg.levels, level],
+                                      })
+                                    }
+                                    className={cn(
+                                      "rounded-lg border px-2 py-0.5 font-mono text-[11px] transition-colors",
+                                      active
+                                        ? "border-primary bg-primary/8 text-foreground"
+                                        : "border-border text-muted-foreground hover:bg-muted/50",
+                                    )}
+                                  >
+                                    {active ? "已选 " : ""}
+                                    {level}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -782,6 +1094,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                   protocol: "openai-responses",
                   baseUrl: presetBaseUrlFor(siteBase.trim(), "openai-responses"),
                   source: "site",
+                  group: selectedToken.group || null,
                 });
               }}
             >
@@ -879,20 +1192,25 @@ function ChoiceCard({
   title,
   desc,
   onClick,
+  loading,
+  disabled,
 }: {
   icon: ReactNode;
   title: string;
   desc: string;
   onClick: () => void;
+  loading?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="rounded-2xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/60 hover:bg-primary/5"
+      disabled={disabled || loading}
+      className="rounded-2xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/60 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-70"
     >
       <div className="flex items-center gap-2">
-        {icon}
+        {loading ? <Loader2 className="size-5 animate-spin text-primary" /> : icon}
         <span className="text-sm font-semibold">{title}</span>
       </div>
       <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{desc}</p>

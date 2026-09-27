@@ -68,7 +68,9 @@
     "createKeyNameHint": "Keep the zmate- prefix so you can identify and revoke it in the site console.",
     "createSubmit": "Create key",
     "creating": "Creating...",
-    "createSuccess": "Key created: {{name}}"
+    "createSuccess": "Key created: {{name}}",
+    "copyMaskedTitle": "Could not retrieve plaintext key",
+    "copyMaskedDesc": "The site did not return the plaintext key (likely new-api key masking). Copy the full key from the site console instead."
   },
   "usageLogs": {
     "title": "Usage Logs",
@@ -121,7 +123,27 @@
     "shopDesc": "No code? Buy one from the card shop, then redeem above.",
     "shopAction": "Visit card shop",
     "notConnected": "Site not connected",
-    "notConnectedDesc": "Use \"Site Import\" on the Providers page to connect a new-api site, then your wallet shows up here."
+    "notConnectedDesc": "Use \"Site Import\" on the Providers page to connect a new-api site, then your wallet shows up here.",
+    "affiliateTitle": "Referral program",
+    "affiliateDesc": "Earn rewards when users sign up with your referral link. Transfer accumulated rewards to your balance anytime.",
+    "affiliatePending": "Pending",
+    "affiliateTotal": "Total earned",
+    "affiliateInvites": "Invites",
+    "affiliateCopyAction": "Copy link",
+    "affiliateCopied": "Copied",
+    "transferAmountPlaceholder": "Amount ($) to transfer to balance",
+    "transferAction": "Transfer",
+    "transferring": "Transferring",
+    "transferSuccess": "Referral rewards transferred to balance",
+    "transferFailed": "Transfer failed",
+    "invalidAmount": "Enter a valid amount",
+    "insufficientAmount": "Not enough pending rewards",
+    "invitedTitle": "Invited users",
+    "invitedTotal": "{{count}} users",
+    "invitedEmpty": "No invited users yet",
+    "invitedEmptyDesc": "Users who signed up with your referral link will appear here.",
+    "pagePrev": "Prev",
+    "pageNext": "Next"
   },
   "providers": {
     "site": {
@@ -177,7 +199,23 @@
       "doneTitle": "Site import finished",
       "doneDesc": "{{providerId}} injected with {{count}} models. Test connectivity from the list.",
       "usingStoredConnection": "Using the site connection saved in \"Login token\": {{url}}",
-      "storedConnectFailed": "The saved site connection failed verification. Please sign in and bind again."
+      "storedConnectFailed": "The saved site connection failed verification. Please sign in and bind again.",
+      "contextTier": "Context tier",
+      "contextWindow": "Context",
+      "maxOutputTokens": "Max output tokens",
+      "moreSettings": "More settings",
+      "inputTypes": "Input types",
+      "inputText": "Text",
+      "inputImage": "Image",
+      "inputVideo": "Video",
+      "inputPdf": "PDF",
+      "capabilities": "Model capabilities",
+      "capStructured": "Structured output",
+      "capWebSearch": "Native web search",
+      "capMidSystem": "Mid-conversation system",
+      "reasoningLevels": "Reasoning levels (low to high, all selected by default)",
+      "contextWindowPlaceholder": "Leave empty for default",
+      "maxOutputPlaceholder": "Leave empty for default"
     },
     "title": "Providers",
     "description": "Manage ZCode custom model providers: add, inject, enable/disable and delete, with per-model reasoning levels.",
@@ -224,11 +262,10 @@
       "contextWindowPlaceholder": "Optional, e.g. 128000",
       "supportsImage": "Image input",
       "reasoningLevels": "Reasoning levels",
-      "reasoningLevelsDesc": "Levels shown in ZCode's model picker; defaults to low/medium/high (Anthropic adds off).",
+      "reasoningLevelsDesc": "Click to toggle a level; selected levels appear in ZCode's model picker. All selected by default.",
       "reasoningMap": "Level mapping expression",
       "reasoningMapDesc": "Advanced: CEL expression mapping a level into the request body. Leave empty to auto-generate per protocol.",
       "reasoningMapPlaceholder": "{'reasoning': {'effort': reasoningLevel}}",
-      "addLevel": "Add level",
       "providerName": "Provider name",
       "providerNamePlaceholder": "e.g. My relay",
       "confirmInject": "Inject",
@@ -475,7 +512,8 @@
     "zcodeRunning": "ZCode running",
     "zcodeNotRunning": "ZCode not running",
     "configValid": "Config valid",
-    "configInvalid": "Config invalid"
+    "configInvalid": "Config invalid",
+    "close": "Close"
   },
   "settings": {
     "title": "Settings",
@@ -560,8 +598,6 @@
     "healthInvalid": "Invalid",
     "pathZcodeHome": "ZCode home",
     "pathProviderConfig": "provider_config.json",
-    "pathTasksDb": "Session index",
-    "pathSessionDb": "Session database",
     "trendTitle": "Activity",
     "tabActivity": "Activity",
     "tabToken": "Tokens",
@@ -569,7 +605,8 @@
     "rangeMonth": "Month",
     "rangeYear": "Year",
     "sessionsUnit": "sessions",
-    "noData": "No data yet"
+    "noData": "No data yet",
+    "pathSessionStores": "Session index & database"
   },
   "siteLogin": {
     "title": "Login token",

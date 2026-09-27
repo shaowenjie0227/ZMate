@@ -48,6 +48,18 @@ pub struct ProviderModelInput {
     pub model_id: String,
     pub context_window: Option<i64>,
     pub supports_image: Option<bool>,
+    #[serde(default)]
+    pub max_output_tokens: Option<i64>,
+    #[serde(default)]
+    pub supports_video: Option<bool>,
+    #[serde(default)]
+    pub supports_pdf: Option<bool>,
+    #[serde(default)]
+    pub supports_json_schema_output: Option<bool>,
+    #[serde(default)]
+    pub supports_native_web_search: Option<bool>,
+    #[serde(default)]
+    pub supports_mid_conversation_system: Option<bool>,
     pub reasoning_levels: Option<Vec<String>>,
     pub reasoning_map: Option<String>,
 }
@@ -70,6 +82,12 @@ pub struct ProviderModelSummary {
     pub enabled: bool,
     pub context_window: Option<i64>,
     pub supports_image: Option<bool>,
+    pub max_output_tokens: Option<i64>,
+    pub supports_video: Option<bool>,
+    pub supports_pdf: Option<bool>,
+    pub supports_json_schema_output: Option<bool>,
+    pub supports_native_web_search: Option<bool>,
+    pub supports_mid_conversation_system: Option<bool>,
     pub reasoning: Option<ReasoningLevelSpec>,
 }
 
@@ -274,6 +292,24 @@ fn model_summaries_for(provider_id: &str, config: &Value) -> Vec<ProviderModelSu
                     .unwrap_or(true),
                 context_window,
                 supports_image,
+                max_output_tokens: cfg
+                    .and_then(|c| c.pointer("/optionSpecs/maxOutputTokens/max"))
+                    .and_then(Value::as_i64),
+                supports_video: properties
+                    .and_then(|p| p.pointer("/inputFormat/supportsVideo"))
+                    .and_then(Value::as_bool),
+                supports_pdf: properties
+                    .and_then(|p| p.pointer("/inputFormat/supportsPdf"))
+                    .and_then(Value::as_bool),
+                supports_json_schema_output: properties
+                    .and_then(|p| p.get("supportsJsonSchemaOutput"))
+                    .and_then(Value::as_bool),
+                supports_native_web_search: properties
+                    .and_then(|p| p.get("supportsNativeWebSearch"))
+                    .and_then(Value::as_bool),
+                supports_mid_conversation_system: properties
+                    .and_then(|p| p.get("supportsMidConversationSystem"))
+                    .and_then(Value::as_bool),
                 reasoning,
             });
         }
@@ -329,16 +365,24 @@ fn prune_backups(dir: &Path, keep: usize) {
 }
 
 /// 取出可变引用；不存在时按路径逐级创建。
-fn ensure_pointer<'a>(root: &'a mut Value, path: &[&str], default: Value) -> &'a mut Value {
+///
+/// 中间键一律保证为对象；最终键只在缺失或为 null 时写入默认值——
+/// 已存在的数组/对象必须原样保留（历史上曾把 providerRules 数组
+/// 覆盖成空对象，导致 upsert 断言崩溃闪退）。
+fn ensure_pointer<'a>(root: &'a mut Value, path: &[&str], mut default: Value) -> &'a mut Value {
     let mut current = root;
-    for key in path {
-        if !current.get(*key).map_or(false, Value::is_object) {
+    for (index, key) in path.iter().enumerate() {
+        let is_last = index + 1 == path.len();
+        if is_last {
+            if current.get(*key).map_or(true, Value::is_null) {
+                current[*key] = std::mem::take(&mut default);
+            }
+        } else if !current.get(*key).map_or(false, Value::is_object) {
             current[*key] = json!({});
         }
-        current = current.get_mut(*key).expect("刚补齐为对象");
-    }
-    if current.is_null() {
-        *current = default;
+        current = current
+            .get_mut(*key)
+            .expect("ensure_pointer: 中间键应已补齐为对象");
     }
     current
 }
@@ -431,6 +475,38 @@ fn unique_provider_id(base: &str, taken: &[String]) -> String {
         }
     }
     format!("{base}-{}", uuid::Uuid::new_v4().simple())
+}
+
+/// 现有供应商的显示名（providerRules + manualProviderRules）
+fn existing_provider_names(config: &Value) -> Vec<String> {
+    let mut names = Vec::new();
+    for key in ["providerRules", "manualProviderRules"] {
+        for rule in config
+            .pointer(&format!("/config/providerConfigRules/{key}"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(name) = rule.get("providerName").and_then(Value::as_str) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
+}
+
+/// 新建供应商时显示名去重："AiSpot" 已存在则依次尝试 "AiSpot 2"、"AiSpot 3"…
+fn unique_provider_name(name: &str, taken: &[String]) -> String {
+    if !taken.iter().any(|existing| existing == name) {
+        return name.to_string();
+    }
+    for n in 2..=1000u32 {
+        let candidate = format!("{name} {n}");
+        if !taken.iter().any(|existing| existing == &candidate) {
+            return candidate;
+        }
+    }
+    format!("{name} {}", &uuid::Uuid::new_v4().simple().to_string()[..6])
 }
 
 // ---------------------------------------------------------------------------
@@ -552,16 +628,137 @@ pub fn validate_reasoning_map(map: &str) -> Vec<CoreWarning> {
 // 拉模型 / 连通性测试
 // ---------------------------------------------------------------------------
 
+/// 连接阶段超时。中转站线路普遍不稳（实测建连在 2s~40s+ 间波动），
+/// 太短会把慢连接误判为不可达；总超时由调用方按请求类型传入。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// 连接类失败（含连接阶段超时）的自动重试次数。线路丢包时单次建连
+/// 随机失败，重试能显著提高成功率；只对 is_connect 重试，HTTP 层错误
+/// 重试没有意义。
+const CONNECT_ATTEMPTS: usize = 3;
+
 fn build_client(timeout: Duration) -> Result<reqwest::blocking::Client, CoreError> {
     reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(8))
+        .connect_timeout(CONNECT_TIMEOUT)
         .timeout(timeout)
         .build()
         .map_err(|e| CoreError::OperationFailed(format!("HTTP 客户端创建失败：{e}")))
 }
 
+/// 带连接重试的 send：仅当错误发生在连接阶段（is_connect，含连接超时）
+/// 时重试，最多 CONNECT_ATTEMPTS 次。其余错误原样返回。
+fn send_with_retry<F>(mut send: F) -> Result<reqwest::blocking::Response, reqwest::Error>
+where
+    F: FnMut() -> Result<reqwest::blocking::Response, reqwest::Error>,
+{
+    let mut last = None;
+    for attempt in 0..CONNECT_ATTEMPTS {
+        match send() {
+            Ok(response) => return Ok(response),
+            Err(e) if e.is_connect() && attempt + 1 < CONNECT_ATTEMPTS => {
+                last = Some(e);
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("重试耗尽时必有最后一次错误"))
+}
+
 fn normalize_base(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
+}
+
+/// 把 reqwest 的 send 错误摊平成「阶段 + 根因」。
+///
+/// 原先只做 `format!("{e}")`，超时和连接失败在前端表现完全一样（都只是
+/// 「无法连接到服务器」），排查时无法区分是 DNS、TLS 还是超时。这里顺着
+/// source 链走到最内层，并把超时单独点出来——推理类模型走非流式请求时
+/// 最常见的失败就是总超时。
+fn describe_send_error(url: &str, timeout: Duration, error: &reqwest::Error) -> String {
+    let mut chain: Vec<String> = Vec::new();
+    let mut cursor: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = cursor {
+        let text = current.to_string();
+        if !text.is_empty() && chain.last() != Some(&text) {
+            chain.push(text);
+        }
+        cursor = current.source();
+    }
+
+    let root = chain.last().cloned().unwrap_or_else(|| error.to_string());
+    let stage = if error.is_timeout() && !error.is_connect() {
+        format!("请求超时（超过 {}s）", timeout.as_secs())
+    } else if error.is_connect() {
+        format!(
+            "连接失败（已自动重试 {} 次，每次最长 {}s）",
+            CONNECT_ATTEMPTS,
+            CONNECT_TIMEOUT.as_secs()
+        )
+    } else {
+        "请求失败".to_string()
+    };
+
+    let mut detail = format!("{stage}（{url}）：{root}");
+    if chain.len() > 1 {
+        detail.push_str(&format!("（完整链路：{}）", chain.join(" → ")));
+    }
+    if error.is_timeout() && !error.is_connect() {
+        detail.push_str(
+            "。若该模型为推理模型，非流式请求可能始终等不到响应，可改用「连通性测试」（流式）验证",
+        );
+    }
+    if error.is_connect() {
+        detail.push_str(
+            "。到该站点的线路可能不稳定或被墙，重试通常能恢复；持续失败建议在 ZCode 设置里配置代理",
+        );
+    }
+    detail
+}
+
+/// baseUrl 里已经带版本段（`/v1` 等）时，调用方再拼一次 `/v1/...` 会变成
+/// `/v1/v1/...`（实测 aispot 中转站直接 404 `Invalid URL`）。这里判断是否
+/// 需要补版本前缀。
+fn has_version_segment(base: &str) -> bool {
+    let rest = base.split("://").nth(1).unwrap_or(base);
+    let path = rest.find('/').map(|i| &rest[i..]).unwrap_or("");
+    path.split('/')
+        .any(|seg| seg.len() > 1 && (seg.as_bytes()[0] == b'v' || seg.as_bytes()[0] == b'V') && seg[1..].bytes().all(|c| c.is_ascii_digit()))
+}
+
+/// 响应是 HTML 页面（而非 JSON 接口响应）。中转站把 `/responses` 之类的
+/// 路径回落到前端页面时会返回 200 + HTML，直接解析只会得到一句
+/// 「未解析到模型回复」，看不出真正原因。
+fn looks_like_html(body: &str) -> bool {
+    let head = body.trim_start();
+    let head: String = head.chars().take(200).collect::<String>().to_ascii_lowercase();
+    head.starts_with("<!doctype html") || head.starts_with("<html") || head.contains("<head>")
+}
+
+/// 上游把请求打到了网页而不是接口时的统一提示。
+fn html_endpoint_hint(url: &str) -> String {
+    format!(
+        "接口 {url} 返回的是网页而不是接口数据：该地址可能缺少版本前缀（如 /v1），或此中转站不支持该协议"
+    )
+}
+
+/// Anthropic 协议的 messages 端点：baseUrl 自带版本段时不再补 `/v1`，
+/// 否则会拼成 `/v1/v1/messages`（实测直接 404 Invalid URL）。
+fn messages_url(base: &str) -> String {
+    if has_version_segment(base) {
+        format!("{base}/messages")
+    } else {
+        format!("{base}/v1/messages")
+    }
+}
+
+/// Anthropic 协议的 models 端点，规则同 [`messages_url`]。
+fn models_url(base: &str) -> String {
+    if has_version_segment(base) {
+        format!("{base}/models")
+    } else {
+        format!("{base}/v1/models")
+    }
 }
 
 fn extract_model_ids(body: &Value) -> Vec<String> {
@@ -601,7 +798,7 @@ pub fn fetch_provider_models(
 
     let (url, request) = match api_type {
         ProviderApiType::AnthropicMessages => {
-            let url = format!("{base}/v1/models");
+            let url = messages_url(&base);
             (
                 url.clone(),
                 client
@@ -625,6 +822,9 @@ pub fn fetch_provider_models(
     let status = response.status();
     let body_text = response.text().unwrap_or_default();
     if !status.is_success() {
+        if looks_like_html(&body_text) {
+            return Err(CoreError::OperationFailed(html_endpoint_hint(&url)));
+        }
         return Err(CoreError::OperationFailed(format!(
             "HTTP {}: {}",
             status.as_u16(),
@@ -635,11 +835,89 @@ pub fn fetch_provider_models(
         .map_err(|e| CoreError::InvalidData(format!("响应不是合法 JSON：{e}")))?;
     let ids = extract_model_ids(&body);
     if ids.is_empty() {
+        if looks_like_html(&body_text) {
+            return Err(CoreError::OperationFailed(html_endpoint_hint(&url)));
+        }
+        // 部分站点不提供 /models、只认 /v1/models（或反之），换一种前缀再试一次
+        if let Some(ids) = fetch_model_ids_via_alternate_prefix(&client, api_type, &base, api_key) {
+            return Ok(ids);
+        }
         return Err(CoreError::InvalidData(
             "响应中未找到模型列表（期望 data[].id）".into(),
         ));
     }
     Ok(ids)
+}
+
+/// /models 未取到模型时，用另一种版本前缀再试一次：
+/// - anthropic 协议：base 已带版本段 → 去掉版本段；未带 → 补 /v1 之外不再猜
+/// - openai 协议：base 未带版本段 → 补 /v1；已带 → 去掉版本段
+///
+/// 站点对「版本前缀在 baseUrl 里还是由面板拼」没有统一约定，这里只做一次
+/// 保守回退，失败就当作原本的错误处理。
+fn fetch_model_ids_via_alternate_prefix(
+    client: &reqwest::blocking::Client,
+    api_type: ProviderApiType,
+    base: &str,
+    api_key: &str,
+) -> Option<Vec<String>> {
+    let base_has_version = has_version_segment(base);
+    let alternate = if base_has_version {
+        strip_version_segment(base)
+    } else {
+        format!("{base}/v1")
+    };
+    let url = match api_type {
+        ProviderApiType::AnthropicMessages => format!("{alternate}/models"),
+        _ => format!("{alternate}/models"),
+    };
+    let request = match api_type {
+        ProviderApiType::AnthropicMessages => client
+            .get(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01"),
+        _ => client.get(&url).header("Authorization", format!("Bearer {api_key}")),
+    };
+    let response = request.send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body_text = response.text().ok()?;
+    if looks_like_html(&body_text) {
+        return None;
+    }
+    let body: Value = serde_json::from_str(&body_text).ok()?;
+    let ids = extract_model_ids(&body);
+    if ids.is_empty() {
+        None
+    } else {
+        Some(ids)
+    }
+}
+
+/// 去掉 URL path 里的版本段（`/v1`、`/v2beta` 之前的位置），保留其余路径。
+fn strip_version_segment(base: &str) -> String {
+    let Some(split) = base.find("://") else {
+        return base.to_string();
+    };
+    let (scheme, rest) = base.split_at(split + 3);
+    let Some(slash) = rest.find('/') else {
+        return base.to_string();
+    };
+    let (authority, path) = rest.split_at(slash);
+    let segments: Vec<&str> = path.split('/').collect();
+    let keep: Vec<&str> = segments
+        .iter()
+        .copied()
+        .filter(|seg| {
+            !(seg.len() > 1
+                && (seg.as_bytes()[0] == b'v' || seg.as_bytes()[0] == b'V')
+                && seg[1..].bytes().all(|c| c.is_ascii_digit()))
+        })
+        .collect();
+    let rebuilt = keep.join("/");
+    let trimmed = rebuilt.trim_end_matches('/');
+    format!("{scheme}{authority}{trimmed}")
 }
 
 pub fn test_provider_connectivity(
@@ -660,21 +938,33 @@ pub fn test_provider_connectivity(
     }
     let result = match build_client(timeout) {
         Ok(client) => {
-            let request = match api_type {
-                ProviderApiType::AnthropicMessages => client
-                    .get(format!("{base}/v1/models"))
-                    .header("x-api-key", api_key)
-                    .header("anthropic-version", "2023-06-01"),
-                _ => client
-                    .get(format!("{base}/models"))
-                    .header("Authorization", format!("Bearer {api_key}")),
+            let (url, request) = match api_type {
+                ProviderApiType::AnthropicMessages => {
+                    let url = models_url(&base);
+                    (
+                        url.clone(),
+                        client
+                            .get(url)
+                            .header("x-api-key", api_key)
+                            .header("anthropic-version", "2023-06-01"),
+                    )
+                }
+                _ => {
+                    let url = format!("{base}/models");
+                    (
+                        url.clone(),
+                        client.get(url).header("Authorization", format!("Bearer {api_key}")),
+                    )
+                }
             };
-            request.send().map_err(CoreError::from).map(|response| {
-                let status_code = response.status().as_u16() as i32;
-                (status_code, response.status().is_success())
-            })
+            send_with_retry(|| request.try_clone().expect("GET 请求可克隆").send())
+                .map_err(|e| describe_send_error(&url, timeout, &e))
+                .map(|response| {
+                    let status_code = response.status().as_u16() as i32;
+                    (status_code, response.status().is_success())
+                })
         }
-        Err(e) => Err(e),
+        Err(e) => Err(e.to_string()),
     };
 
     match result {
@@ -696,7 +986,7 @@ pub fn test_provider_connectivity(
         Err(e) => ProviderConnectivityPayload {
             reachable: false,
             status_code: None,
-            message: format!("无法连接到服务器：{e}"),
+            message: e.to_string(),
             latency_ms: None,
         },
     }
@@ -931,7 +1221,8 @@ fn send_model_probe(
     if base.is_empty() {
         return fail("baseUrl 不能为空".into());
     }
-    let client = match build_client(Duration::from_secs(60)) {
+    let timeout = Duration::from_secs(60);
+    let client = match build_client(timeout) {
         Ok(client) => client,
         Err(e) => return fail(format!("HTTP 客户端创建失败：{e}")),
     };
@@ -951,7 +1242,7 @@ fn send_model_probe(
             }),
         ),
         ProviderApiType::AnthropicMessages => (
-            format!("{base}/v1/messages"),
+            messages_url(&base),
             json!({
                 "model": model_id,
                 "messages": [{ "role": "user", "content": "hi" }],
@@ -960,26 +1251,35 @@ fn send_model_probe(
         ),
     };
 
-    let send = |body: &Value| -> Result<reqwest::blocking::Response, CoreError> {
-        let mut request = client.post(&url).json(body);
-        request = match api_type {
-            ProviderApiType::AnthropicMessages => request
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01"),
-            _ => request.header("Authorization", format!("Bearer {api_key}")),
+    let send = |url: &str, body: &Value| -> Result<reqwest::blocking::Response, CoreError> {
+        let body = body.clone();
+        let build_request = |body: &Value| {
+            let mut request = client.post(url).json(body);
+            request = match api_type {
+                ProviderApiType::AnthropicMessages => request
+                    .header("x-api-key", api_key)
+                    .header("anthropic-version", "2023-06-01"),
+                _ => request.header("Authorization", format!("Bearer {api_key}")),
+            };
+            request
         };
-        request
-            .send()
-            .map_err(|e| CoreError::OperationFailed(format!("请求失败（{url}）：{e}")))
+        send_with_retry(|| build_request(&body).try_clone().expect("POST 请求可克隆").send())
+            .map_err(|e| CoreError::OperationFailed(describe_send_error(url, timeout, &e)))
     };
 
     let started = Instant::now();
-    let response = match send(&body) {
+    let response = match send(&url, &body) {
         Ok(response) => response,
-        Err(e) => return fail(format!("无法连接到服务器：{e}")),
+        Err(e) => return fail(e.to_string()),
     };
     let status_code = response.status().as_u16() as i32;
     let body_text = response.text().unwrap_or_default();
+
+    // 中转站把接口路径回落到前端页面时是 200 + HTML，直接解析只会得到
+    // 「未解析到模型回复」这种看不出原因的结论。
+    if looks_like_html(&body_text) {
+        return fail(html_endpoint_hint(&url));
+    }
 
     // 部分推理模型只认 max_completion_tokens 或不接受 max_tokens，遇 400 提到该字段就去掉重试一次
     if status_code == 400
@@ -989,7 +1289,7 @@ fn send_model_probe(
         if let Some(obj) = body.as_object_mut() {
             obj.remove("max_tokens");
         }
-        if let Ok(retry) = send(&body) {
+        if let Ok(retry) = send(&url, &body) {
             let retry_status = retry.status().as_u16() as i32;
             let retry_text = retry.text().unwrap_or_default();
             return model_probe_finish(api_type, retry_status, &retry_text, started.elapsed().as_millis() as u64);
@@ -1007,9 +1307,12 @@ fn model_probe_finish(
 ) -> ProviderModelTestPayload {
     let parsed: Result<Value, _> = serde_json::from_str(body_text);
     let body = parsed.ok();
+    // OpenAI Responses 协议的响应对象本身就带 "error" 字段，成功时为 null；
+    // 只有非 null 才是真正的错误（此前把 "error": null 误报成「被拒绝：null」）
     let error_text = body
         .as_ref()
         .and_then(|b| b.get("error"))
+        .filter(|e| !e.is_null())
         .map(|e| match e {
             Value::String(s) => s.clone(),
             other => other.to_string(),
@@ -1228,7 +1531,7 @@ pub fn stream_test_provider_model(
             }),
         ),
         ProviderApiType::AnthropicMessages => (
-            format!("{base}/v1/messages"),
+            messages_url(&base),
             "/v1/messages",
             json!({
                 "model": model_id,
@@ -1242,7 +1545,8 @@ pub fn stream_test_provider_model(
     // 终端面板展示用：完整请求路径（含 baseUrl 里的 /v1 等前缀），与原版一致
     let display_path = url_path_of(&url);
 
-    let client = build_client(Duration::from_secs(120))?;
+    let timeout = Duration::from_secs(120);
+    let client = build_client(timeout)?;
     let started = Instant::now();
     on_progress(StreamTestStage::Sent, None, 0);
 
@@ -1253,11 +1557,11 @@ pub fn stream_test_provider_model(
             .header("anthropic-version", "2023-06-01"),
         _ => request.header("Authorization", format!("Bearer {api_key}")),
     };
-    let response = match request.send() {
+    let response = match send_with_retry(|| request.try_clone().expect("POST 请求可克隆").send()) {
         Ok(response) => response,
         Err(e) => {
-            return Err(CoreError::OperationFailed(format!(
-                "无法连接到服务器：{e}"
+            return Err(CoreError::OperationFailed(describe_send_error(
+                &url, timeout, &e,
             )))
         }
     };
@@ -1281,10 +1585,14 @@ pub fn stream_test_provider_model(
 
     if !(200..300).contains(&status_code) {
         let text = response.text().unwrap_or_default();
-        let message = format!(
-            "模型请求失败（HTTP {status_code}）：{}",
-            text.chars().take(200).collect::<String>()
-        );
+        let message = if looks_like_html(&text) {
+            html_endpoint_hint(&url)
+        } else {
+            format!(
+                "模型请求失败（HTTP {status_code}）：{}",
+                text.chars().take(200).collect::<String>()
+            )
+        };
         on_progress(StreamTestStage::Done, Some(status_code), started.elapsed().as_millis() as u64);
         return Ok(finish_fail(Some(status_code), message));
     }
@@ -1296,6 +1604,7 @@ pub fn stream_test_provider_model(
     let mut first_packet_ms: Option<u64> = None;
     let mut read_error: Option<String> = None;
     let mut line = String::new();
+    let mut non_sse_head = String::new();
 
     loop {
         line.clear();
@@ -1308,6 +1617,11 @@ pub fn stream_test_provider_model(
             }
         }
         let trimmed = line.trim_end_matches(['\r', '\n']);
+        // 200 但推的是 HTML（接口路径回落到前端页面）时留一段样本来判定
+        if first_packet_ms.is_none() && non_sse_head.len() < 200 {
+            non_sse_head.push_str(trimmed);
+            non_sse_head.push('\n');
+        }
         if first_packet_ms.is_none() && trimmed.starts_with("data:") {
             first_packet_ms = Some(started.elapsed().as_millis() as u64);
             on_progress(
@@ -1342,10 +1656,17 @@ pub fn stream_test_provider_model(
             format!("流式读取中断：{error}"),
         )
     } else if reply.is_empty() {
-        finish_fail(
-            Some(status_code),
-            format!("HTTP {status_code} 但流中没有解析到模型回复"),
-        )
+        if looks_like_html(&non_sse_head) {
+            finish_fail(Some(status_code), html_endpoint_hint(&url))
+        } else {
+            finish_fail(
+                Some(status_code),
+                format!(
+                    "HTTP {status_code} 但流中没有解析到模型回复：{}",
+                    non_sse_head.trim().chars().take(200).collect::<String>()
+                ),
+            )
+        }
     } else {
         ProviderStreamTestPayload {
             success: true,
@@ -1429,25 +1750,33 @@ pub fn upsert_provider(
 
     let (mut config, _) = read_config(paths)?;
 
-    // 确定 providerId：显式指定时不允许与其它供应商冲突；否则由名称生成并去重
-    let provider_id = match input.provider_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(explicit) => {
-            let taken: Vec<String> = existing_provider_ids(&config)
-                .into_iter()
-                .filter(|id| id != explicit)
-                .collect();
-            if taken.iter().any(|id| id == explicit) {
-                return Err(CoreError::InvalidData(format!(
-                    "providerId 已被其他供应商占用：{explicit}"
-                )));
+    // 确定 providerId / 显示名：
+    // - 编辑（显式 providerId）：ID 不允许冲突，显示名永远尊重用户输入
+    // - 新建：显示名重名时自动追加序号（"AiSpot" → "AiSpot 2"），
+    //   ID 由最终显示名派生（"AiSpot 2" → "aispot-2"），与 ID 去重逻辑天然对齐
+    let (provider_id, display_name) =
+        match input.provider_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(explicit) => {
+                let taken: Vec<String> = existing_provider_ids(&config)
+                    .into_iter()
+                    .filter(|id| id != explicit)
+                    .collect();
+                if taken.iter().any(|id| id == explicit) {
+                    return Err(CoreError::InvalidData(format!(
+                        "providerId 已被其他供应商占用：{explicit}"
+                    )));
+                }
+                (explicit.to_string(), name.to_string())
             }
-            explicit.to_string()
-        }
-        None => {
-            let taken = existing_provider_ids(&config);
-            unique_provider_id(&slugify(name), &taken)
-        }
-    };
+            None => {
+                let taken_ids = existing_provider_ids(&config);
+                let display_name = unique_provider_name(name, &existing_provider_names(&config));
+                (
+                    unique_provider_id(&slugify(&display_name), &taken_ids),
+                    display_name,
+                )
+            }
+        };
 
     // --- provider rule ---
     let rules = provider_rules_mut(&mut config);
@@ -1467,7 +1796,7 @@ pub fn upsert_provider(
             }
         })
     });
-    rule["providerName"] = Value::String(name.to_string());
+    rule["providerName"] = Value::String(display_name);
     let cfg = rule
         .get_mut("config")
         .and_then(Value::as_object_mut)
@@ -1559,20 +1888,55 @@ pub fn upsert_provider(
                 }
             }
         }
-        match model.supports_image {
-            Some(true) => {
-                if properties.get("inputFormat").map_or(false, Value::is_object) {
-                    properties["inputFormat"]["supportsImage"] = Value::Bool(true);
-                } else {
-                    properties["inputFormat"] = json!({ "supportsImage": true });
+        // inputFormat：persisted schema 允许任意子集，只写选中的项
+        {
+            if !properties.get("inputFormat").map_or(false, Value::is_object) {
+                properties["inputFormat"] = json!({});
+            }
+            let input_format = properties
+                .get_mut("inputFormat")
+                .and_then(Value::as_object_mut)
+                .expect("inputFormat 为对象");
+            for (key, value) in [
+                ("supportsImage", model.supports_image),
+                ("supportsVideo", model.supports_video),
+                ("supportsPdf", model.supports_pdf),
+            ] {
+                match value {
+                    Some(true) => {
+                        input_format.insert(key.into(), Value::Bool(true));
+                    }
+                    _ => {
+                        input_format.remove(key);
+                    }
                 }
             }
-            _ => {
-                if let Some(obj) = properties
-                    .get_mut("inputFormat")
-                    .and_then(Value::as_object_mut)
-                {
-                    obj.remove("supportsImage");
+            if input_format.is_empty() {
+                properties.as_object_mut().unwrap().remove("inputFormat");
+            }
+        }
+        for (key, value) in [
+            (
+                "supportsJsonSchemaOutput",
+                model.supports_json_schema_output,
+            ),
+            (
+                "supportsNativeWebSearch",
+                model.supports_native_web_search,
+            ),
+            (
+                "supportsMidConversationSystem",
+                model.supports_mid_conversation_system,
+            ),
+        ] {
+            match value {
+                Some(true) => {
+                    properties[key] = Value::Bool(true);
+                }
+                _ => {
+                    if let Some(obj) = properties.as_object_mut() {
+                        obj.remove(key);
+                    }
                 }
             }
         }
@@ -1617,6 +1981,26 @@ pub fn upsert_provider(
             None => {
                 if let Some(obj) = cfg_obj.get_mut("optionSpecs").and_then(Value::as_object_mut) {
                     obj.remove("reasoningLevel");
+                }
+            }
+        }
+
+        // optionSpecs.maxOutputTokens：{max: 上限, map: 恒等表达式}
+        match model.max_output_tokens {
+            Some(max) if max > 0 => {
+                let mut option_specs = cfg_obj
+                    .get("optionSpecs")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                // 注意：maxOutputTokens 只写 {max}——ZCode 的 option map 若存在，
+                // 必须是"返回 JSON 对象"的表达式，恒等映射会被校验拒绝，
+                // 导致整个 provider_config.json 被判定无效（模型设置清空）。
+                option_specs["maxOutputTokens"] = json!({ "max": max });
+                cfg_obj.insert("optionSpecs".into(), option_specs);
+            }
+            _ => {
+                if let Some(obj) = cfg_obj.get_mut("optionSpecs").and_then(Value::as_object_mut) {
+                    obj.remove("maxOutputTokens");
                 }
             }
         }
@@ -1758,4 +2142,64 @@ pub fn set_provider_enabled(
         provider: summary,
         backup_path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        has_version_segment, html_endpoint_hint, looks_like_html, messages_url, models_url,
+        normalize_base, strip_version_segment,
+    };
+
+    #[test]
+    fn normalize_base_trims_trailing_slashes() {
+        assert_eq!(normalize_base("  https://a.example/v1/  "), "https://a.example/v1");
+        assert_eq!(normalize_base("https://a.example"), "https://a.example");
+    }
+
+    #[test]
+    fn detects_version_segment() {
+        assert!(has_version_segment("https://aispot.swj0227.icu/v1"));
+        assert!(has_version_segment("http://38.207.166.83/v1"));
+        assert!(has_version_segment("https://a.example/api/v2"));
+        assert!(!has_version_segment("https://a.example"));
+        assert!(!has_version_segment("https://a.example/api"));
+        // 版本段必须整段是 v+数字，/verify 这类路径不算
+        assert!(!has_version_segment("https://a.example/verify"));
+    }
+
+    #[test]
+    fn anthropic_messages_url_never_doubles_v1() {
+        // baseUrl 已带版本段：不再补 /v1（原先会拼成 /v1/v1/messages → 404）
+        assert_eq!(
+            messages_url("http://38.207.166.83/v1"),
+            "http://38.207.166.83/v1/messages"
+        );
+        // baseUrl 不带版本段：补 /v1
+        assert_eq!(messages_url("https://api.anthropic.com"), "https://api.anthropic.com/v1/messages");
+        // models 端点同规则
+        assert_eq!(models_url("http://38.207.166.83/v1"), "http://38.207.166.83/v1/models");
+        assert_eq!(models_url("https://api.anthropic.com"), "https://api.anthropic.com/v1/models");
+    }
+
+    #[test]
+    fn strips_version_segment_for_fallback() {
+        assert_eq!(strip_version_segment("https://a.example/v1"), "https://a.example");
+        assert_eq!(strip_version_segment("https://a.example/api/v1"), "https://a.example/api");
+        assert_eq!(strip_version_segment("https://a.example"), "https://a.example");
+    }
+
+    #[test]
+    fn detects_html_payload() {
+        assert!(looks_like_html("<!doctype html>\n<html lang=\"en\">"));
+        assert!(looks_like_html("\n  <html><head></head></html>"));
+        assert!(!looks_like_html("{\"data\":[]}"));
+        assert!(!looks_like_html("event: response.created\ndata: {}"));
+    }
+
+    #[test]
+    fn html_hint_mentions_url() {
+        let hint = html_endpoint_hint("https://aispot.swj0227.icu/responses");
+        assert!(hint.contains("https://aispot.swj0227.icu/responses"));
+    }
 }

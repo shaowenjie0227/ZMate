@@ -18,6 +18,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { BentoCard } from "@/components/ui/bento-card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -64,6 +72,8 @@ export function MaintenancePage() {
   const [runningKeys, setRunningKeys] = useState<Record<string, boolean>>({});
   const [results, setResults] = useState<Record<string, ActionResult>>({});
   const [diagnose, setDiagnose] = useState<DiagnoseResult | null>(null);
+  const [diagnoseOpen, setDiagnoseOpen] = useState(false);
+  const [diagnoseError, setDiagnoseError] = useState<string | null>(null);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [downloadConfirmOpen, setDownloadConfirmOpen] = useState(false);
 
@@ -127,17 +137,11 @@ export function MaintenancePage() {
         cliConfigValid: data.cliConfigValid,
         cliConfigError: data.cliConfigError,
       });
-      setActionResult("diagnose", {
-        type: "success",
-        message: t("maintenance.diagnoseResult", {
-          os: data.os,
-          arch: data.arch,
-          version: data.coreVersion,
-        }),
-      });
     },
-    onError: (error) =>
-      setActionResult("diagnose", { type: "error", message: String(error) }),
+    onError: (error) => {
+      setDiagnose(null);
+      setDiagnoseError(String(error));
+    },
   });
 
   const cleanMutation = useMutation({
@@ -228,66 +232,95 @@ export function MaintenancePage() {
         actionLabel={t("maintenance.diagnoseAction")}
         runningLabel={t("maintenance.diagnosing")}
         busy={runningKeys.diagnose === true}
-        onRun={() => runAction("diagnose", () => diagnoseMutation.mutateAsync())}
-        result={results.diagnose}
-      >
-        {diagnose && (
-          <div className="space-y-3 rounded-xl bg-muted/40 p-4 text-sm">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge
-                variant="secondary"
-                className={cn(
-                  "gap-1",
-                  diagnose.zcodeRunning && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400",
-                )}
-              >
-                {diagnose.zcodeRunning ? t("maintenance.zcodeRunning") : t("maintenance.zcodeNotRunning")}
-              </Badge>
-              <Badge
-                variant="secondary"
-                className={cn(
-                  "gap-1",
-                  diagnose.providerConfigValid
-                    ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400"
-                    : "bg-destructive/12 text-destructive",
-                )}
-              >
-                {diagnose.providerConfigValid ? t("maintenance.configValid") : t("maintenance.configInvalid")}
-              </Badge>
-              <Badge
-                variant="secondary"
-                className={cn(
-                  "gap-1",
-                  diagnose.cliConfigValid
-                    ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400"
-                    : "bg-destructive/12 text-destructive",
-                )}
-              >
-                {diagnose.cliConfigValid ? t("maintenance.configValid") : t("maintenance.configInvalid")}
-              </Badge>
+        onRun={() => {
+          setDiagnoseError(null);
+          setDiagnoseOpen(true);
+          void runAction("diagnose", () => diagnoseMutation.mutateAsync());
+        }}
+      />
+      <Dialog open={diagnoseOpen} onOpenChange={setDiagnoseOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{t("maintenance.diagnose")}</DialogTitle>
+            <DialogDescription>{t("maintenance.diagnoseDesc")}</DialogDescription>
+          </DialogHeader>
+          {runningKeys.diagnose === true ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              {t("maintenance.diagnosing")}
             </div>
-            {diagnose.providerConfigError && (
-              <p className="text-xs text-destructive">{diagnose.providerConfigError}</p>
-            )}
-            {diagnose.cliConfigError && <p className="text-xs text-destructive">{diagnose.cliConfigError}</p>}
-            <div className="grid gap-1.5 sm:grid-cols-2">
-              {diagnose.pathChecks.map((check) => (
-                <div key={check.key} className="flex items-center gap-2 text-xs">
-                  {check.exists ? (
-                    <CircleCheck className="size-3.5 shrink-0 text-emerald-500" />
-                  ) : (
-                    <CircleX className="size-3.5 shrink-0 text-muted-foreground" />
+          ) : diagnoseError ? (
+            <p className="py-6 text-center text-sm text-destructive">{diagnoseError}</p>
+          ) : diagnose ? (
+            <div className="space-y-3 text-sm">
+              <p className="text-xs text-muted-foreground">
+                {t("maintenance.diagnoseResult", {
+                  os: diagnose.os,
+                  arch: diagnose.arch,
+                  version: diagnose.coreVersion,
+                })}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="secondary"
+                  className={cn(
+                    "gap-1",
+                    diagnose.zcodeRunning && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400",
                   )}
-                  <span className="text-muted-foreground">{PATH_LABELS[check.key] ?? check.key}</span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/70">
-                    {check.path}
-                  </span>
-                </div>
-              ))}
+                >
+                  {diagnose.zcodeRunning ? t("maintenance.zcodeRunning") : t("maintenance.zcodeNotRunning")}
+                </Badge>
+                <Badge
+                  variant="secondary"
+                  className={cn(
+                    "gap-1",
+                    diagnose.providerConfigValid
+                      ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400"
+                      : "bg-destructive/12 text-destructive",
+                  )}
+                >
+                  {diagnose.providerConfigValid ? t("maintenance.configValid") : t("maintenance.configInvalid")}
+                </Badge>
+                <Badge
+                  variant="secondary"
+                  className={cn(
+                    "gap-1",
+                    diagnose.cliConfigValid
+                      ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400"
+                      : "bg-destructive/12 text-destructive",
+                  )}
+                >
+                  {diagnose.cliConfigValid ? t("maintenance.configValid") : t("maintenance.configInvalid")}
+                </Badge>
+              </div>
+              {diagnose.providerConfigError && (
+                <p className="text-xs text-destructive">{diagnose.providerConfigError}</p>
+              )}
+              {diagnose.cliConfigError && <p className="text-xs text-destructive">{diagnose.cliConfigError}</p>}
+              <div className="grid gap-1.5 sm:grid-cols-2">
+                {diagnose.pathChecks.map((check) => (
+                  <div key={check.key} className="flex items-center gap-2 text-xs">
+                    {check.exists ? (
+                      <CircleCheck className="size-3.5 shrink-0 text-emerald-500" />
+                    ) : (
+                      <CircleX className="size-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="text-muted-foreground">{PATH_LABELS[check.key] ?? check.key}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/70">
+                      {check.path}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
-      </ActionCard>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDiagnoseOpen(false)}>
+              {t("maintenance.close")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <BentoCard className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">

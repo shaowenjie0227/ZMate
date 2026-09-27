@@ -36,6 +36,12 @@ export interface ProviderModelSummary {
   enabled: boolean;
   contextWindow: number | null;
   supportsImage: boolean | null;
+  maxOutputTokens: number | null;
+  supportsVideo: boolean | null;
+  supportsPdf: boolean | null;
+  supportsJsonSchemaOutput: boolean | null;
+  supportsNativeWebSearch: boolean | null;
+  supportsMidConversationSystem: boolean | null;
   reasoning: ReasoningLevelSpec | null;
 }
 
@@ -106,10 +112,37 @@ export interface ProviderStreamTestPayload {
   message: string;
 }
 
+export interface NewApiAffiliateInfo {
+  affCode: string;
+  referralUrl: string;
+  /** 待划转奖励（quota 原始单位） */
+  pendingQuota: number;
+  /** 已历史划转奖励 */
+  historyQuota: number;
+  inviteCount: number;
+}
+
+export interface NewApiAffiliatePage {
+  page: number;
+  pageSize: number;
+  total: number;
+  items: Array<Record<string, unknown>>;
+}
+
 export interface ProviderModelInput {
   modelId: string;
   contextWindow?: number | null;
   supportsImage?: boolean | null;
+  /** 最大输出 token 上限，写入 optionSpecs.maxOutputTokens.max */
+  maxOutputTokens?: number | null;
+  supportsVideo?: boolean | null;
+  supportsPdf?: boolean | null;
+  /** 结构化输出 */
+  supportsJsonSchemaOutput?: boolean | null;
+  /** 原生联网搜索 */
+  supportsNativeWebSearch?: boolean | null;
+  /** 对话中系统消息 */
+  supportsMidConversationSystem?: boolean | null;
   /** 档位列表，如 ["low","medium","high"]；anthropic 默认含 "off" */
   reasoningLevels?: string[] | null;
   /** 自定义 CEL 映射；缺省时后端按协议生成默认模板 */

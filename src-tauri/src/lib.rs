@@ -59,7 +59,7 @@ pub fn run() {
 
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
-                .icon_as_template(true)
+                .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("ZMate")
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| {
@@ -84,6 +84,10 @@ pub fn run() {
             commands::providers::set_provider_enabled,
             commands::newapi::newapi_probe_site,
             commands::newapi::newapi_list_tokens,
+            commands::newapi::newapi_reveal_token_key,
+            commands::newapi::newapi_affiliate_info,
+            commands::newapi::newapi_invited_users,
+            commands::newapi::newapi_transfer_aff_quota,
             commands::newapi::newapi_list_groups,
             commands::newapi::newapi_list_models,
             commands::newapi::newapi_create_token,
@@ -162,8 +166,15 @@ pub fn run() {
     });
 }
 
+// macOS 托盘走模板图标（黑色 glyph，系统自动适配菜单栏明暗）；
+// Windows 没有 template 机制，深色任务栏是默认形态，用白色 glyph 保证可见性。
+#[cfg(target_os = "macos")]
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../assets/tray-icon.png");
+#[cfg(not(target_os = "macos"))]
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../assets/tray-icon-white.png");
+
 fn load_tray_template_icon() -> Result<Image<'static>, String> {
-    let reader = image::ImageReader::new(Cursor::new(include_bytes!("../../assets/tray-icon.png")))
+    let reader = image::ImageReader::new(Cursor::new(TRAY_ICON_BYTES))
         .with_guessed_format()
         .map_err(|e| format!("failed to guess tray icon format: {e}"))?;
     let decoded = reader

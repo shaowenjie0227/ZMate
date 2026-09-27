@@ -83,6 +83,8 @@ cargo check --manifest-path src-tauri/Cargo.toml  # Rust check
 pnpm tauri build                                  # Production build
 ```
 
+> Windows packaging & release guide (Git Bash linker conflict, NSIS/MSI, GitHub Releases): [docs/RELEASE-windows.md](docs/RELEASE-windows.md).
+
 ---
 
 ## Project Structure

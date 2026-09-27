@@ -3,8 +3,8 @@ use crate::core::models::{
 };
 use crate::core::newapi::{
     self, KeysPayload, NewApiCreateTokenInput, NewApiGroupInfo, NewApiLogsPayload,
-    NewApiRedeemResult, NewApiSiteInfo, NewApiTokenDetail, NewApiTokenInfo,
-    NewApiUserProfile, SiteUsagePayload, WalletPayload,
+    NewApiRedeemResult, NewApiSiteInfo, NewApiTokenDetail, NewApiTokenInfo, NewApiUserProfile,
+    SiteUsagePayload, WalletPayload,
 };
 use crate::core::settings;
 use crate::platform::paths::ZCodePaths;
@@ -341,6 +341,96 @@ pub async fn newapi_list_tokens(
 }
 
 #[tauri::command]
+pub async fn newapi_reveal_token_key(
+    paths: State<'_, Arc<ZCodePaths>>,
+    base_url: Option<String>,
+    access_token: Option<String>,
+    token_id: i64,
+) -> Result<CoreEnvelope<String>, String> {
+    let paths = paths.inner().clone();
+    let key = tauri::async_runtime::spawn_blocking(move || {
+        let (base_url, access_token, user_id, _) =
+            resolve_site_connection(&paths, base_url, access_token)?;
+        newapi::reveal_token_key(
+            &base_url,
+            &access_token,
+            opt_user_id(user_id),
+            token_id,
+            std::time::Duration::from_secs(15),
+        )
+    })
+    .await
+    .map_err(|e| format!("任务执行失败：{e}"))?
+    .map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(key))
+}
+
+#[tauri::command]
+pub async fn newapi_affiliate_info(
+    paths: State<'_, Arc<ZCodePaths>>,
+    base_url: Option<String>,
+    access_token: Option<String>,
+) -> Result<CoreEnvelope<newapi::NewApiAffiliateInfo>, String> {
+    let paths = paths.inner().clone();
+    let info = tauri::async_runtime::spawn_blocking(move || {
+        let (base_url, access_token, user_id, _) =
+            resolve_site_connection(&paths, base_url, access_token)?;
+        newapi::affiliate_info(&base_url, &access_token, opt_user_id(user_id), std::time::Duration::from_secs(15))
+    })
+    .await
+    .map_err(|e| format!("任务执行失败：{e}"))?
+    .map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(info))
+}
+
+#[tauri::command]
+pub async fn newapi_invited_users(
+    paths: State<'_, Arc<ZCodePaths>>,
+    base_url: Option<String>,
+    access_token: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
+) -> Result<CoreEnvelope<newapi::NewApiAffiliatePage>, String> {
+    let paths = paths.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let (base_url, access_token, user_id, _) =
+            resolve_site_connection(&paths, base_url, access_token)?;
+        newapi::invited_users(
+            &base_url,
+            &access_token,
+            opt_user_id(user_id),
+            page.unwrap_or(1).max(1),
+            page_size.unwrap_or(10).clamp(1, 100),
+            std::time::Duration::from_secs(15),
+        )
+    })
+    .await
+    .map_err(|e| format!("任务执行失败：{e}"))?
+    .map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(result))
+}
+
+#[tauri::command]
+pub async fn newapi_transfer_aff_quota(
+    paths: State<'_, Arc<ZCodePaths>>,
+    base_url: Option<String>,
+    access_token: Option<String>,
+    quota: i64,
+) -> Result<CoreEnvelope<bool>, String> {
+    let paths = paths.inner().clone();
+    let ok = tauri::async_runtime::spawn_blocking(move || {
+        let (base_url, access_token, user_id, _) =
+            resolve_site_connection(&paths, base_url, access_token)?;
+        newapi::transfer_aff_quota(&base_url, &access_token, opt_user_id(user_id), quota, std::time::Duration::from_secs(15))?;
+        Ok::<bool, crate::core::models::CoreError>(true)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败：{e}"))?
+    .map_err(|e| e.to_string())?;
+    Ok(CoreEnvelope::ok(ok))
+}
+
+#[tauri::command]
 pub async fn newapi_list_groups(
     paths: State<'_, Arc<ZCodePaths>>,
     base_url: Option<String>,
@@ -363,12 +453,19 @@ pub async fn newapi_list_models(
     paths: State<'_, Arc<ZCodePaths>>,
     base_url: Option<String>,
     access_token: Option<String>,
+    group: Option<String>,
 ) -> Result<CoreEnvelope<Vec<String>>, String> {
     let paths = paths.inner().clone();
     let items = tauri::async_runtime::spawn_blocking(move || {
         let (base_url, access_token, user_id, _) =
             resolve_site_connection(&paths, base_url, access_token)?;
-        newapi::list_models(&base_url, &access_token, opt_user_id(user_id), std::time::Duration::from_secs(15))
+        newapi::list_models(
+            &base_url,
+            &access_token,
+            opt_user_id(user_id),
+            group.as_deref(),
+            std::time::Duration::from_secs(15),
+        )
     })
     .await
     .map_err(|e| format!("任务执行失败：{e}"))?

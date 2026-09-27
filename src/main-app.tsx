@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useState, type CSSProperties } from "react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useIsFetching, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useTheme } from "@/hooks/use-theme";
@@ -7,7 +7,10 @@ import { useAccentColor } from "@/hooks/use-accent-color";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { useDeferredReady } from "@/hooks/use-deferred-ready";
 import { useRouteTransition } from "@/hooks/use-route-transition";
+import { Loader2, RefreshCw } from "lucide-react";
 import { PageStage } from "@/components/layout/page-stage";
+import { ZTraceIntro } from "@/components/usage-logs/z-trace-intro";
+import { Button } from "@/components/ui/button";
 import {
   AppSidebar,
   appNavItems,
@@ -109,6 +112,13 @@ function MainApp() {
 
   const installLocationPrompt = useInstallLocationPrompt();
   const routeTransition = useRouteTransition(route, { durationMs: 240 });
+  // 「使用日志」打开动画：每次切到该页面时播放一次
+  const [zIntroKey, setZIntroKey] = useState(0);
+  useEffect(() => {
+    if (route !== "usageLogs") return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    setZIntroKey((k) => k + 1);
+  }, [route]);
 
   const handleThemeChange = useCallback((nextTheme: "light" | "dark" | "system") => {
     setTheme(nextTheme);
@@ -229,8 +239,18 @@ function MainApp() {
           onThemeChange={handleThemeChange}
         />
         <SidebarInset className="max-h-screen overflow-hidden">
-          <SiteHeader title={t(routeLabelKey)} />
+          <SiteHeader
+            title={t(routeLabelKey)}
+            action={
+              route === "overview" ? (
+                <HeaderRefreshButton />
+              ) : undefined
+            }
+          />
           <div className="relative min-h-0 flex-1 overflow-hidden">
+            {route === "usageLogs" && zIntroKey > 0 && (
+              <ZTraceIntro key={zIntroKey} onFinish={() => setZIntroKey(0)} />
+            )}
             {routeOrder
               .filter((candidate) => routeTransition.mountedRoutes.includes(candidate))
               .map((candidate) => (
@@ -352,5 +372,27 @@ function PageShellSkeleton() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** 仪表盘顶栏刷新按钮：重拉仪表盘与站点用量两个查询 */
+function HeaderRefreshButton() {
+  const queryClient = useQueryClient();
+  const fetching =
+    useIsFetching({ queryKey: ["dashboard"] }) +
+    useIsFetching({ queryKey: ["site-usage"] });
+  return (
+    <Button
+      variant="outline"
+      size="icon"
+      className="size-8"
+      onClick={() => {
+        void queryClient.refetchQueries({ queryKey: ["dashboard"] });
+        void queryClient.refetchQueries({ queryKey: ["site-usage"] });
+      }}
+      disabled={fetching > 0}
+    >
+      {fetching > 0 ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+    </Button>
   );
 }

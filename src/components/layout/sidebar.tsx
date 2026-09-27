@@ -56,15 +56,15 @@ export const appNavItems: {
 }[] = [
   { route: "overview", icon: LayoutDashboard, labelKey: "nav.overview" },
   { route: "providers", icon: Boxes, labelKey: "nav.providers" },
-  { route: "apiKeys", icon: Key, labelKey: "nav.apiKeys", bottom: true },
-  { route: "usageLogs", icon: ScrollText, labelKey: "nav.usageLogs" },
-  { route: "wallet", icon: Wallet, labelKey: "nav.wallet", bottom: true },
   { route: "mcp", icon: Server, labelKey: "nav.mcp" },
   { route: "skills", icon: Sparkles, labelKey: "nav.skills" },
   { route: "customInstructions", icon: FileCode2, labelKey: "nav.customInstructions" },
   { route: "sessions", icon: MessagesSquare, labelKey: "nav.sessions" },
   { route: "maintenance", icon: Wrench, labelKey: "nav.maintenance" },
   { route: "settings", icon: Settings, labelKey: "nav.settings" },
+  { route: "apiKeys", icon: Key, labelKey: "nav.apiKeys", bottom: true },
+  { route: "usageLogs", icon: ScrollText, labelKey: "nav.usageLogs", bottom: true },
+  { route: "wallet", icon: Wallet, labelKey: "nav.wallet", bottom: true },
   { route: "profile", icon: CircleUserRound, labelKey: "nav.profile", bottom: true },
 ];
 

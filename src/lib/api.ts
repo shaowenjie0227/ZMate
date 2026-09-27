@@ -12,6 +12,8 @@ import type {
   McpServerRemovePayload,
   McpTransport,
   KeysPayload,
+  NewApiAffiliateInfo,
+  NewApiAffiliatePage,
   NewApiCreateTokenInput,
   NewApiGroupInfo,
   NewApiUserProfile,
@@ -121,11 +123,23 @@ export const api = {
   newapiListTokens: (baseUrl: string | null, accessToken: string | null) =>
     invoke<CoreEnvelope<NewApiTokenInfo[]>>("newapi_list_tokens", { baseUrl, accessToken }),
 
+  newapiRevealTokenKey: (tokenId: number, baseUrl: string | null, accessToken: string | null) =>
+    invoke<CoreEnvelope<string>>("newapi_reveal_token_key", { tokenId, baseUrl, accessToken }),
+
+  newapiAffiliateInfo: (baseUrl: string | null = null, accessToken: string | null = null) =>
+    invoke<CoreEnvelope<NewApiAffiliateInfo>>("newapi_affiliate_info", { baseUrl, accessToken }),
+
+  newapiInvitedUsers: (page: number, pageSize: number) =>
+    invoke<CoreEnvelope<NewApiAffiliatePage>>("newapi_invited_users", { page, pageSize }),
+
+  newapiTransferAffQuota: (quota: number) =>
+    invoke<CoreEnvelope<boolean>>("newapi_transfer_aff_quota", { quota }),
+
   newapiListGroups: (baseUrl: string | null, accessToken: string | null) =>
     invoke<CoreEnvelope<NewApiGroupInfo[]>>("newapi_list_groups", { baseUrl, accessToken }),
 
-  newapiListModels: (baseUrl: string | null, accessToken: string | null) =>
-    invoke<CoreEnvelope<string[]>>("newapi_list_models", { baseUrl, accessToken }),
+  newapiListModels: (baseUrl: string | null, accessToken: string | null, group: string | null = null) =>
+    invoke<CoreEnvelope<string[]>>("newapi_list_models", { baseUrl, accessToken, group }),
 
   newapiCreateToken: (
     baseUrl: string | null,

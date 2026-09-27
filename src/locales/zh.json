@@ -68,7 +68,9 @@
     "createKeyNameHint": "建议保留 zmate- 前缀，便于在站点后台识别与吊销。",
     "createSubmit": "创建密钥",
     "creating": "创建中...",
-    "createSuccess": "密钥已创建：{{name}}"
+    "createSuccess": "密钥已创建：{{name}}",
+    "copyMaskedTitle": "未能取得明文密钥",
+    "copyMaskedDesc": "站点未提供明文（可能是新版 new-api 的脱敏策略），请到站点控制台复制该令牌的完整密钥"
   },
   "usageLogs": {
     "title": "使用日志",
@@ -121,7 +123,27 @@
     "shopDesc": "没有兑换码？前往发卡网站购买，购买后在上方兑换即可到账。",
     "shopAction": "前往发卡网",
     "notConnected": "尚未接入站点",
-    "notConnectedDesc": "在「供应商」页使用「站点接入」连接 new-api 站点后，这里会显示钱包信息。"
+    "notConnectedDesc": "在「供应商」页使用「站点接入」连接 new-api 站点后，这里会显示钱包信息。",
+    "affiliateTitle": "推荐计划",
+    "affiliateDesc": "用户通过您的推荐链接注册后，您即可获得奖励。可随时将累计奖励转入余额。",
+    "affiliatePending": "待确认",
+    "affiliateTotal": "总收入",
+    "affiliateInvites": "邀请",
+    "affiliateCopyAction": "复制链接",
+    "affiliateCopied": "已复制",
+    "transferAmountPlaceholder": "输入要转入余额的金额（$）",
+    "transferAction": "转入余额",
+    "transferring": "转入中",
+    "transferSuccess": "邀请奖励已转入余额",
+    "transferFailed": "转入失败",
+    "invalidAmount": "请输入有效的金额",
+    "insufficientAmount": "待确认奖励不足",
+    "invitedTitle": "已邀请用户",
+    "invitedTotal": "共 {{count}} 人",
+    "invitedEmpty": "暂无已邀请用户",
+    "invitedEmptyDesc": "通过您的邀请链接注册的用户将显示在这里。",
+    "pagePrev": "上一页",
+    "pageNext": "下一页"
   },
   "providers": {
     "site": {
@@ -177,7 +199,23 @@
       "doneTitle": "站点接入完成",
       "doneDesc": "{{providerId}} 已注入 {{count}} 个模型，可在列表中测试连通性。",
       "usingStoredConnection": "将使用「登录令牌」页保存的站点连接：{{url}}",
-      "storedConnectFailed": "已保存的站点连接验证失败，请重新登录绑定。"
+      "storedConnectFailed": "已保存的站点连接验证失败，请重新登录绑定。",
+      "contextTier": "上下文档位",
+      "contextWindow": "上下文",
+      "maxOutputTokens": "最大输出 Token",
+      "moreSettings": "更多设置",
+      "inputTypes": "输入类型",
+      "inputText": "文本",
+      "inputImage": "图片",
+      "inputVideo": "视频",
+      "inputPdf": "PDF",
+      "capabilities": "模型能力",
+      "capStructured": "结构化输出",
+      "capWebSearch": "原生联网搜索",
+      "capMidSystem": "对话中系统消息",
+      "reasoningLevels": "推理等级（从低到高，默认全选）",
+      "contextWindowPlaceholder": "不限制则留空",
+      "maxOutputPlaceholder": "不限制则留空"
     },
     "title": "供应商管理",
     "description": "管理 ZCode 的自定义模型供应商：新增、注入、启停与删除，支持为每个模型配置推理档位。",
@@ -224,11 +262,10 @@
       "contextWindowPlaceholder": "可选，如 128000",
       "supportsImage": "支持图片输入",
       "reasoningLevels": "推理档位",
-      "reasoningLevelsDesc": "在 ZCode 模型选择器中出现的档位；默认 low/medium/high，Anthropic 默认含 off。",
+      "reasoningLevelsDesc": "点击选中/取消档位；选中的档位会出现在 ZCode 模型选择器中，默认全选。",
       "reasoningMap": "档位映射表达式",
       "reasoningMapDesc": "高级选项：CEL 表达式把档位映射进请求体。留空则按协议自动生成。",
       "reasoningMapPlaceholder": "{'reasoning': {'effort': reasoningLevel}}",
-      "addLevel": "添加档位",
       "providerName": "供应商名称",
       "providerNamePlaceholder": "例如：我的中转站",
       "confirmInject": "确认注入",
@@ -475,7 +512,8 @@
     "zcodeRunning": "ZCode 运行中",
     "zcodeNotRunning": "ZCode 未运行",
     "configValid": "配置合法",
-    "configInvalid": "配置异常"
+    "configInvalid": "配置异常",
+    "close": "关闭"
   },
   "settings": {
     "title": "设置",
@@ -560,8 +598,6 @@
     "healthInvalid": "异常",
     "pathZcodeHome": "ZCode 主目录",
     "pathProviderConfig": "provider_config.json",
-    "pathTasksDb": "会话索引库",
-    "pathSessionDb": "会话数据库",
     "trendTitle": "活跃趋势",
     "tabActivity": "活跃趋势",
     "tabToken": "Token",
@@ -569,7 +605,8 @@
     "rangeMonth": "本月",
     "rangeYear": "年",
     "sessionsUnit": "个会话",
-    "noData": "暂无数据"
+    "noData": "暂无数据",
+    "pathSessionStores": "会话索引与数据库"
   },
   "siteLogin": {
     "title": "登录令牌",
