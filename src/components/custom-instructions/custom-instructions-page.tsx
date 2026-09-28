@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, FileCode2, History, PencilLine, RotateCw, Wand2 } from "lucide-react";
 
 import { BentoCard } from "@/components/ui/bento-card";
 import { BentoInnerPanel } from "@/components/ui/bento-inner-panel";
+import { usePageStage } from "@/components/layout/page-stage";
 import { Button } from "@/components/ui/button";
 import { ButtonBusyContent } from "@/components/ui/button-busy-content";
 import { Textarea } from "@/components/ui/textarea";
@@ -68,6 +70,13 @@ export function CustomInstructionsPage() {
   } | null>(null);
   const [draftInitialized, setDraftInitialized] = useState(false);
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
+  // 页签切换器挂到顶栏（SiteHeader 的 #site-header-actions 容器）；
+  // 路由保活期间本页不会卸载，非可见态必须停渲染，切换器才不会残留在别的页面
+  const stage = usePageStage();
+  const [headerActionsEl, setHeaderActionsEl] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setHeaderActionsEl(document.getElementById("site-header-actions"));
+  }, []);
 
   const stateQuery = useQuery({
     queryKey: ["custom-instructions", "state"],
@@ -232,17 +241,21 @@ export function CustomInstructionsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
-        <p className="max-w-md text-sm text-muted-foreground">{t("customInstructions.description")}</p>
-        <SegmentedOptions
-          items={[
-            { value: "configure", label: "配置指令" },
-            { value: "templates", label: "模板中心" },
-          ]}
-          value={tab}
-          onChange={(value) => setTab(value as CustomInstructionsTab)}
-        />
-      </div>
+      <p className="text-sm text-muted-foreground">{t("customInstructions.description")}</p>
+
+      {headerActionsEl &&
+        stage !== "idle" &&
+        createPortal(
+          <SegmentedOptions
+            items={[
+              { value: "configure", label: "配置指令" },
+              { value: "templates", label: "模板中心" },
+            ]}
+            value={tab}
+            onChange={(value) => setTab(value as CustomInstructionsTab)}
+          />,
+          headerActionsEl,
+        )}
 
       {tab === "templates" ? (
         <BentoCard className="min-h-[520px]">

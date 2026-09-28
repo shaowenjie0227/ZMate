@@ -503,6 +503,52 @@ export interface SessionStatsPayload {
 }
 
 // ---------------------------------------------------------------------------
+// 会话迁移（导出 zip / 导入 zip）
+// ---------------------------------------------------------------------------
+
+/** 迁移进度事件载荷（session-transfer-progress） */
+export interface SessionTransferProgress {
+  stage: "backup" | "export" | "import";
+  done: number;
+  total: number;
+}
+
+/** 导入预览里的单个会话条目 */
+export interface TransferPreviewItem {
+  taskId: string;
+  title: string;
+  workspacePath: string | null;
+  updatedAt: number;
+  messageCount: number;
+  bodyExists: boolean;
+  existsLocally: boolean;
+}
+
+/** 导入预览载荷（inspect_session_zip） */
+export interface TransferPreviewPayload {
+  format: string;
+  version: number;
+  exportedAt: number;
+  total: number;
+  items: TransferPreviewItem[];
+}
+
+/** 导出结果（export_sessions） */
+export interface TransferExportPayload {
+  exported: number;
+  missingTaskIds: string[];
+  filePath: string;
+  fileBytes: number;
+}
+
+/** 导入结果（import_sessions） */
+export interface TransferImportPayload {
+  imported: number;
+  skipped: number;
+  backupDir: string;
+}
+
+// ---------------------------------------------------------------------------
 // System
 // ---------------------------------------------------------------------------
 

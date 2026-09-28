@@ -29,6 +29,8 @@ pub struct ZCodePaths {
     pub app_data_dir: PathBuf,
     pub skill_backups_dir: PathBuf,
     pub provider_config_backups_dir: PathBuf,
+    /// 会话迁移导入前自动备份两个 ZCode 会话库的目录。
+    pub session_transfer_backups_dir: PathBuf,
     pub custom_instruction_history_dir: PathBuf,
     pub settings_path: PathBuf,
 }
@@ -52,6 +54,7 @@ impl ZCodePaths {
             credentials_path: zcode_home.join("v2").join("credentials.json"),
             skill_backups_dir: app_data_dir.join("skill-backups"),
             provider_config_backups_dir: app_data_dir.join("backups").join("provider-config"),
+            session_transfer_backups_dir: app_data_dir.join("backups").join("session-transfer"),
             custom_instruction_history_dir: app_data_dir.join("custom-instructions").join("history"),
             settings_path: app_data_dir.join("settings.json"),
             app_data_dir,
@@ -72,6 +75,7 @@ impl ZCodePaths {
         std::fs::create_dir_all(&self.app_data_dir)?;
         std::fs::create_dir_all(&self.skill_backups_dir)?;
         std::fs::create_dir_all(&self.provider_config_backups_dir)?;
+        std::fs::create_dir_all(&self.session_transfer_backups_dir)?;
         std::fs::create_dir_all(&self.custom_instruction_history_dir)?;
         Ok(())
     }

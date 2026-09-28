@@ -38,6 +38,9 @@ import type {
   SessionListPayload,
   SessionOverviewPayload,
   SessionStatsPayload,
+  TransferExportPayload,
+  TransferImportPayload,
+  TransferPreviewPayload,
   SiteUsagePayload,
   WalletPayload,
   SkillBackupListPayload,
@@ -49,6 +52,7 @@ import type {
   UpdateInstallabilityPayload,
 } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
+import { formatInvokeError } from "@/lib/invoke-error";
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauriRuntime()) {
@@ -56,6 +60,14 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
     return tauriInvoke<T>(cmd, args);
   }
   throw new Error(`Command "${cmd}" is only available in Tauri runtime`);
+}
+
+/** Rust CoreError::SiteTokenInvalid 的 Display 前缀，两层靠它对齐（见 newapi.rs） */
+export const SITE_TOKEN_INVALID_MARKER = "站点访问令牌无效或已失效";
+
+/** 站点明确拒绝访问令牌（存储连接已失效，需重新登录） */
+export function isSiteTokenInvalidError(error: unknown): boolean {
+  return formatInvokeError(error, "").includes(SITE_TOKEN_INVALID_MARKER);
 }
 
 export const api = {
@@ -327,6 +339,21 @@ export const api = {
 
   getSessionStats: (taskId: string) =>
     invoke<CoreEnvelope<SessionStatsPayload>>("get_session_stats", { taskId }),
+
+  // ------------------------------------------------------------------
+  // 会话迁移（导出 zip / 导入 zip）
+  // ------------------------------------------------------------------
+  /** 把指定会话导出为 zip（outPath 由前端 save 对话框取得）；进度走 session-transfer-progress 事件 */
+  exportSessions: (taskIds: string[], outPath: string) =>
+    invoke<CoreEnvelope<TransferExportPayload>>("export_sessions", { taskIds, outPath }),
+
+  /** 解析迁移包生成导入预览（不做任何写入） */
+  inspectSessionZip: (zipPath: string) =>
+    invoke<CoreEnvelope<TransferPreviewPayload>>("inspect_session_zip", { zipPath }),
+
+  /** 导入迁移包（mode: skip=跳过已存在 | overwrite=覆盖已存在）；进度走 session-transfer-progress 事件 */
+  importSessions: (zipPath: string, mode: "skip" | "overwrite") =>
+    invoke<CoreEnvelope<TransferImportPayload>>("import_sessions", { zipPath, mode }),
 
   // ------------------------------------------------------------------
   // System

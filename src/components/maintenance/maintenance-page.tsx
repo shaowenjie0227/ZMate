@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { flushSync } from "react-dom";
-import { CircleCheck, CircleX, Download, ExternalLink, Loader2, Play, Waypoints } from "lucide-react";
+import { ArrowLeftRight, CircleCheck, CircleX, Download, ExternalLink, Loader2, Play, Waypoints } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { SITE_DIRECT_ORIGINS, siteDirectApi, type SiteDirectPingResult } from "@/lib/site-direct";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertDialog,
@@ -52,6 +53,21 @@ interface ActionResult {
   type: "success" | "error";
   message: string;
 }
+
+/** 「IP 直连站点」的三个入口：主域名 + 两台直连 IP（与 Rust 侧优先级一致） */
+const DIRECT_TARGETS = [
+  { key: "domain", origin: SITE_DIRECT_ORIGINS.domain, labelKey: "maintenance.directTargetDomain" },
+  { key: "ipPrimary", origin: SITE_DIRECT_ORIGINS.ipPrimary, labelKey: "maintenance.directTargetIpPrimary" },
+  { key: "ipFallback", origin: SITE_DIRECT_ORIGINS.ipFallback, labelKey: "maintenance.directTargetIpFallback" },
+] as const;
+
+type DirectOutcome =
+  | { type: "switched"; targetOrigin: string; providersUpdated: number }
+  | { type: "restored"; targetOrigin: string; providersUpdated: number }
+  | { type: "allFailed" }
+  | { type: "applyFailed"; message: string };
+
+type DirectRowState = { status: "testing" } | { status: "done"; ping: SiteDirectPingResult };
 
 interface DiagnoseResult {
   zcodeRunning: boolean;
@@ -120,6 +136,113 @@ export function MaintenancePage() {
 
   const setActionResult = (key: string, result: ActionResult) => {
     setResults((prev) => ({ ...prev, [key]: result }));
+  };
+
+  // -----------------------------------------------------------------
+  // IP 直连站点：徽章显示当前入口；「切换」打开弹窗测试三个入口的
+  // 可达性，由用户点选改换入口（选回主域名即恢复=关闭直连），不自动切换
+  // -----------------------------------------------------------------
+  const queryClient = useQueryClient();
+  const [directTesting, setDirectTesting] = useState(false);
+  const [directDialogOpen, setDirectDialogOpen] = useState(false);
+  const [directRows, setDirectRows] = useState<Record<string, DirectRowState>>({});
+  const [directOutcome, setDirectOutcome] = useState<DirectOutcome | null>(null);
+  const [directSelectedOrigin, setDirectSelectedOrigin] = useState<string | null>(null);
+  const [directBusyOrigin, setDirectBusyOrigin] = useState<string | null>(null);
+  const directBusy = directTesting;
+
+  const directQuery = useQuery({
+    queryKey: ["site-direct"],
+    queryFn: async () => (await siteDirectApi.status()).data,
+  });
+
+  // 站点入口变更后，所有走存储连接的查询与供应商列表都需要用新地址重取
+  const invalidateSiteQueries = useCallback(() => {
+    for (const key of ["site-connection", "site-usage", "wallet", "api-keys", "user-profile", "providers"]) {
+      void queryClient.invalidateQueries({ queryKey: [key] });
+    }
+    void queryClient.invalidateQueries({ queryKey: ["site-logs"] });
+  }, [queryClient]);
+
+  // 把站点入口切换到指定目标：弹窗内点选入口与自动切换共用
+  const applyDirectOrigin = async (targetOrigin: string) => {
+    setDirectBusyOrigin(targetOrigin);
+    setDirectOutcome(null);
+    try {
+      const response = await siteDirectApi.apply(targetOrigin);
+      const restored = targetOrigin === SITE_DIRECT_ORIGINS.domain;
+      setDirectSelectedOrigin(targetOrigin);
+      setDirectOutcome({
+        type: restored ? "restored" : "switched",
+        targetOrigin,
+        providersUpdated: response.data.providersUpdated,
+      });
+      toast({
+        title: restored
+          ? t("maintenance.directRestored", {
+              origin: targetOrigin,
+              count: response.data.providersUpdated,
+            })
+          : t("maintenance.directSwitched", {
+              origin: targetOrigin,
+              count: response.data.providersUpdated,
+            }),
+        variant: "success",
+      });
+      invalidateSiteQueries();
+    } catch (error) {
+      setDirectOutcome({
+        type: "applyFailed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setDirectBusyOrigin(null);
+      void directQuery.refetch();
+    }
+  };
+
+  // 打开弹窗测试三个入口的可达性，由用户点选改换入口（选回主域名即恢复）
+  const runDirectTest = async () => {
+    setDirectTesting(true);
+    setDirectOutcome(null);
+    setDirectSelectedOrigin(directQuery.data?.currentOrigin ?? null);
+    setDirectRows(
+      Object.fromEntries(DIRECT_TARGETS.map((target) => [target.key, { status: "testing" as const }])),
+    );
+
+    try {
+      const settled = await Promise.all(
+        DIRECT_TARGETS.map(async (target) => {
+          try {
+            const response = await siteDirectApi.ping(target.key, target.origin);
+            return { key: target.key, ping: response.data };
+          } catch (error) {
+            const ping: SiteDirectPingResult = {
+              label: target.key,
+              origin: target.origin,
+              reachable: false,
+              statusCode: null,
+              latencyMs: null,
+              error: error instanceof Error ? error.message : String(error),
+            };
+            return { key: target.key, ping };
+          }
+        }),
+      );
+      setDirectRows(Object.fromEntries(settled.map(({ key, ping }) => [key, { status: "done" as const, ping }])));
+
+      if (!settled.some(({ ping }) => ping.reachable)) {
+        setDirectOutcome({ type: "allFailed" });
+        toast({ title: t("maintenance.directAllFailed"), variant: "destructive" });
+      }
+    } finally {
+      setDirectTesting(false);
+    }
+  };
+
+  const openDirectDialog = () => {
+    setDirectDialogOpen(true);
+    void runDirectTest();
   };
 
   const diagnoseMutation = useMutation({
@@ -207,7 +330,7 @@ export function MaintenancePage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3.5">
       <div className="space-y-1">
         <h2 className="text-lg font-semibold">{t("maintenance.title")}</h2>
         <p className="text-sm text-muted-foreground">{t("maintenance.description")}</p>
@@ -316,6 +439,166 @@ export function MaintenancePage() {
           ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDiagnoseOpen(false)}>
+              {t("maintenance.close")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <BentoCard className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 className="text-[15px] font-medium">{t("maintenance.directTitle")}</h3>
+              {directQuery.data?.currentOrigin && (
+                <span
+                  className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-muted-foreground"
+                  title={directQuery.data.currentOrigin}
+                >
+                  <span
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      directQuery.data?.directActive ? "bg-emerald-500" : "bg-muted-foreground/40",
+                    )}
+                  />
+                  <span className="truncate">
+                    {directQuery.data.currentOrigin.replace(/^https?:\/\//, "")}
+                  </span>
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t("maintenance.directDesc")}</p>
+          </div>
+          <Button size="sm" variant="outline" disabled={directBusy} onClick={openDirectDialog}>
+            {directBusy ? <Loader2 className="animate-spin" /> : <ArrowLeftRight />}
+            {t("maintenance.directSwitchButton")}
+          </Button>
+        </div>
+
+        {directQuery.data?.directActive && directQuery.data.providerMatches != null && (
+          <p className="mt-3 break-all font-mono text-[11px] text-muted-foreground">
+            {t("maintenance.directCurrent", {
+              providers: directQuery.data.providerMatches,
+            })}
+          </p>
+        )}
+
+        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground/80">
+          {t("maintenance.directHint")}
+        </p>
+      </BentoCard>
+
+      <Dialog open={directDialogOpen} onOpenChange={setDirectDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("maintenance.directTitle")}</DialogTitle>
+            <DialogDescription>{t("maintenance.directDialogDesc")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2" role="radiogroup" aria-label={t("maintenance.directTitle")}>
+            {DIRECT_TARGETS.map((target) => {
+              const row = directRows[target.key];
+              const ping = row?.status === "done" ? row.ping : null;
+              const reachable = ping?.reachable ?? false;
+              const selected = directSelectedOrigin === target.origin;
+              const busy = directBusyOrigin === target.origin;
+              // 可点选 = 测试完成且该入口可达、当前不忙、且不是正在使用的入口
+              const selectable = ping != null && reachable && !directBusy && !busy && !selected;
+              return (
+                <div
+                  key={target.key}
+                  role="radio"
+                  aria-checked={selected}
+                  aria-disabled={!selectable}
+                  tabIndex={selectable ? 0 : -1}
+                  onClick={() => {
+                    if (selectable) void applyDirectOrigin(target.origin);
+                  }}
+                  onKeyDown={(event) => {
+                    if (selectable && (event.key === "Enter" || event.key === " ")) {
+                      event.preventDefault();
+                      void applyDirectOrigin(target.origin);
+                    }
+                  }}
+                  className={cn(
+                    "flex items-center justify-between gap-3 rounded-xl border px-3 py-2 transition-colors",
+                    selectable && "cursor-pointer hover:border-primary/50 hover:bg-muted/40",
+                    selected && "border-primary/60 bg-primary/5",
+                    ping != null && !reachable && "opacity-60",
+                  )}
+                >
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <span
+                      className={cn(
+                        "flex size-4 shrink-0 items-center justify-center rounded-full border-2",
+                        selected ? "border-primary" : "border-muted-foreground/30",
+                      )}
+                    >
+                      {selected && <span className="size-2 rounded-full bg-primary" />}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">{t(target.labelKey)}</p>
+                      <p className="truncate font-mono text-[11px] text-muted-foreground">{target.origin}</p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5 text-xs">
+                    {busy ? (
+                      <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                    ) : !ping ? (
+                      <>
+                        <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                        <span className="text-muted-foreground">{t("maintenance.directRowTesting")}</span>
+                      </>
+                    ) : ping.reachable ? (
+                      <>
+                        <CircleCheck className="size-3.5 text-emerald-500" />
+                        <span className="text-emerald-600 dark:text-emerald-400">
+                          {ping.latencyMs != null ? `${ping.latencyMs}ms` : `HTTP ${ping.statusCode ?? 0}`}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <CircleX className="size-3.5 text-destructive" />
+                        <span
+                          className="max-w-[170px] truncate text-destructive"
+                          title={ping.error ?? undefined}
+                        >
+                          {ping.error ?? t("maintenance.directRowUnreachable")}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {directOutcome?.type === "allFailed" && (
+            <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm leading-relaxed text-destructive">
+              {t("maintenance.directAllFailed")}
+            </div>
+          )}
+          {directOutcome?.type === "applyFailed" && (
+            <p className="break-all text-sm text-destructive">
+              {t("maintenance.directApplyFailed", { message: directOutcome.message })}
+            </p>
+          )}
+          {directOutcome &&
+            (directOutcome.type === "switched" || directOutcome.type === "restored") && (
+              <p className="break-all text-sm text-emerald-600 dark:text-emerald-400">
+                {directOutcome.type === "switched"
+                  ? t("maintenance.directSwitched", {
+                      origin: directOutcome.targetOrigin,
+                      count: directOutcome.providersUpdated,
+                    })
+                  : t("maintenance.directRestored", {
+                      origin: directOutcome.targetOrigin,
+                      count: directOutcome.providersUpdated,
+                    })}
+              </p>
+            )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDirectDialogOpen(false)}>
               {t("maintenance.close")}
             </Button>
           </DialogFooter>

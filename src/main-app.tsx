@@ -7,9 +7,10 @@ import { useAccentColor } from "@/hooks/use-accent-color";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { useDeferredReady } from "@/hooks/use-deferred-ready";
 import { useRouteTransition } from "@/hooks/use-route-transition";
-import { Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw, ShieldCheck } from "lucide-react";
 import { PageStage } from "@/components/layout/page-stage";
 import { ZTraceIntro } from "@/components/usage-logs/z-trace-intro";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   AppSidebar,
@@ -101,7 +102,7 @@ function MainApp() {
   const { accent, setAccent, heatmap, setHeatmap } = useAccentColor();
   const { i18n, t } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(
-    () => localStorage.getItem("sidebar_collapsed") === "false",
+    () => localStorage.getItem("sidebar_collapsed") !== "true",
   );
   const update = useUpdateCheck();
   const showUpdateOverlay =
@@ -241,6 +242,14 @@ function MainApp() {
         <SidebarInset className="max-h-screen overflow-hidden">
           <SiteHeader
             title={t(routeLabelKey)}
+            badge={
+              route === "sessions" ? (
+                <Badge variant="secondary" className="gap-1">
+                  <ShieldCheck className="size-3" />
+                  {t("sessions.readOnlyBadge")}
+                </Badge>
+              ) : undefined
+            }
             action={
               route === "overview" ? (
                 <HeaderRefreshButton />

@@ -4,11 +4,13 @@ import { Separator } from "@/components/ui/separator";
 
 interface SiteHeaderProps {
   title: string;
+  /** 渲染在标题旁的徽章（如会话页的只读标记） */
+  badge?: ReactNode;
   /** 渲染在标题栏右侧的操作区（如页面级刷新按钮） */
   action?: ReactNode;
 }
 
-export function SiteHeader({ title, action }: SiteHeaderProps) {
+export function SiteHeader({ title, badge, action }: SiteHeaderProps) {
   return (
     <header
       className="relative z-[70] flex h-12 shrink-0 items-center gap-2 border-b px-4"
@@ -19,6 +21,7 @@ export function SiteHeader({ title, action }: SiteHeaderProps) {
       <h1 className="text-sm font-medium" data-tauri-drag-region>
         {title}
       </h1>
+      {badge ? <div className="flex items-center">{badge}</div> : null}
       {/* 页面可通过 portal 往这里塞自己的操作按钮 */}
       <div
         id="site-header-actions"

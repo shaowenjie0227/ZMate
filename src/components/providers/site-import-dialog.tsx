@@ -403,7 +403,8 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
       for (const id of items) next[id] = prev[id] ?? emptyImportConfig(protocol);
       return next;
     });
-    setExpandedModels(new Set());
+    // 模型卡「更多设置」默认全部展开
+    setExpandedModels(new Set(items));
     setModelsInfo(t("providers.wizard.fetchSuccess", { count: items.length }));
   };
 
@@ -511,6 +512,11 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
       return next;
     });
     setSelectedModels((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+    setExpandedModels((prev) => {
       const next = new Set(prev);
       for (const id of ids) next.add(id);
       return next;
@@ -960,6 +966,12 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                               <Label className="text-xs text-muted-foreground">
                                 {t("providers.site.inputTypes")}
                               </Label>
+                              <span
+                                aria-label={t("providers.site.inputText")}
+                                className="rounded-lg border border-primary bg-primary/8 px-2 py-0.5 text-[11px] text-foreground"
+                              >
+                                已选 {t("providers.site.inputText")}
+                              </span>
                               {(["inputImage", "inputVideo", "inputPdf"] as const).map((key) => {
                                 const active = cfg[key];
                                 return (
@@ -1014,35 +1026,37 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                                 );
                               })}
                             </div>
-                            <div className="flex flex-wrap items-center gap-1.5">
+                            <div>
                               <Label className="text-xs text-muted-foreground">
                                 {t("providers.site.reasoningLevels")}
                               </Label>
-                              {protocolReasoningLevels(protocol).map((level) => {
-                                const active = cfg.levels.includes(level);
-                                return (
-                                  <button
-                                    key={level}
-                                    type="button"
-                                    onClick={() =>
-                                      updateModelConfig(id, {
-                                        levels: active
-                                          ? cfg.levels.filter((l) => l !== level)
-                                          : [...cfg.levels, level],
-                                      })
-                                    }
-                                    className={cn(
-                                      "rounded-lg border px-2 py-0.5 font-mono text-[11px] transition-colors",
-                                      active
-                                        ? "border-primary bg-primary/8 text-foreground"
-                                        : "border-border text-muted-foreground hover:bg-muted/50",
-                                    )}
-                                  >
-                                    {active ? "已选 " : ""}
-                                    {level}
-                                  </button>
-                                );
-                              })}
+                              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                {protocolReasoningLevels(protocol).map((level) => {
+                                  const active = cfg.levels.includes(level);
+                                  return (
+                                    <button
+                                      key={level}
+                                      type="button"
+                                      onClick={() =>
+                                        updateModelConfig(id, {
+                                          levels: active
+                                            ? cfg.levels.filter((l) => l !== level)
+                                            : [...cfg.levels, level],
+                                        })
+                                      }
+                                      className={cn(
+                                        "rounded-lg border px-2 py-0.5 font-mono text-[11px] transition-colors",
+                                        active
+                                          ? "border-primary bg-primary/8 text-foreground"
+                                          : "border-border text-muted-foreground hover:bg-muted/50",
+                                      )}
+                                    >
+                                      {active ? "已选 " : ""}
+                                      {level}
+                                    </button>
+                                  );
+                                })}
+                              </div>
                             </div>
                           </div>
                         )}

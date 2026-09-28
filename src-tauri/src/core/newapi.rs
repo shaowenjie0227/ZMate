@@ -153,8 +153,40 @@ fn parse_frt_ms(other: &Value) -> i64 {
 }
 
 /// new-api 统一信封：HTTP 200 且 success=true 时取 data，否则报错
+/// 站点拒绝访问令牌的响应特征。注意 new-api 多数版本对无效令牌返回的是
+/// HTTP 200 + success:false（aispot 实测），所以只能按 message 内容识别，
+/// 不能依赖 401 状态码。
+fn is_invalid_token_message(message: &str) -> bool {
+    let lowered = message.to_lowercase();
+    [
+        "invalid access token",
+        "无效的访问令牌",
+        "访问令牌无效",
+        "无效的令牌",
+        "令牌已失效",
+        "令牌不存在",
+    ]
+    .iter()
+    .any(|pattern| lowered.contains(pattern))
+}
+
+/// 从失败响应体里尽量抠出可读信息：优先 JSON 的 message 字段，否则取前 200 字符
+fn extract_failure_message(body_text: &str) -> String {
+    if let Ok(body) = serde_json::from_str::<Value>(body_text) {
+        if let Some(message) = body.get("message").and_then(Value::as_str) {
+            if !message.is_empty() {
+                return message.to_string();
+            }
+        }
+    }
+    body_text.chars().take(200).collect()
+}
+
 fn parse_envelope(status: reqwest::StatusCode, body_text: &str, url: &str) -> Result<Value, CoreError> {
     if !status.is_success() {
+        if is_invalid_token_message(body_text) {
+            return Err(CoreError::SiteTokenInvalid(extract_failure_message(body_text)));
+        }
         let preview: String = body_text.chars().take(200).collect();
         return Err(CoreError::OperationFailed(format!(
             "HTTP {}: {}（{url}）",
@@ -170,6 +202,9 @@ fn parse_envelope(status: reqwest::StatusCode, body_text: &str, url: &str) -> Re
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("站点返回失败，未提供原因");
+        if is_invalid_token_message(message) {
+            return Err(CoreError::SiteTokenInvalid(message.to_string()));
+        }
         return Err(CoreError::OperationFailed(message.to_string()));
     }
     Ok(body.get("data").cloned().unwrap_or(Value::Null))
@@ -1424,5 +1459,46 @@ mod tests {
         assert!((numeric.ratio - 0.5).abs() < f64::EPSILON);
         let obj = groups.iter().find(|g| g.name == "ccmax").unwrap();
         assert!((obj.ratio - 1.2).abs() < f64::EPSILON);
+    }
+
+    /// 令牌失效识别：英文（aispot 实测原文）与常见中文文案都要命中
+    #[test]
+    fn invalid_token_message_matches_known_wordings() {
+        assert!(is_invalid_token_message(
+            "Unauthorized, invalid access token"
+        ));
+        assert!(is_invalid_token_message("无效的访问令牌"));
+        assert!(is_invalid_token_message("该令牌已失效，请重新登录"));
+        // New-Api-User 头缺失指引与普通业务错误不应误判
+        assert!(!is_invalid_token_message(NEW_API_USER_GUIDANCE));
+        assert!(!is_invalid_token_message("余额不足"));
+        assert!(!is_invalid_token_message("无权进行此操作，未登录且未提供 access token"));
+    }
+
+    /// aispot 实测形态：HTTP 200 + success:false + 失效文案 → SiteTokenInvalid
+    #[test]
+    fn parse_envelope_tags_invalid_token_http200() {
+        let body = r#"{"message":"Unauthorized, invalid access token","success":false}"#;
+        let err = parse_envelope(reqwest::StatusCode::OK, body, "http://site/api/user/self")
+            .err()
+            .expect("should fail");
+        assert!(
+            err.to_string().contains("站点访问令牌无效或已失效"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// 部分版本对无效令牌回 HTTP 401，同样要归类为 SiteTokenInvalid
+    #[test]
+    fn parse_envelope_tags_invalid_token_http401() {
+        let body = r#"{"message":"无效的访问令牌","success":false}"#;
+        let err = parse_envelope(
+            reqwest::StatusCode::UNAUTHORIZED,
+            body,
+            "http://site/api/user/self",
+        )
+        .err()
+        .expect("should fail");
+        assert!(err.to_string().contains("站点访问令牌无效或已失效"));
     }
 }

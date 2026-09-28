@@ -405,6 +405,10 @@ pub enum CoreError {
 
     #[error("Operation failed: {0}")]
     OperationFailed(String),
+
+    /// 站点明确拒绝了访问令牌（存储连接已失效）——前端据此自动退回未登录态
+    #[error("站点访问令牌无效或已失效：{0}")]
+    SiteTokenInvalid(String),
 }
 
 impl Serialize for CoreError {

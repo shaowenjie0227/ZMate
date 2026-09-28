@@ -20,6 +20,7 @@ import {
 import { api } from "@/lib/api";
 import type { ProviderApiType, ProviderModelInput, ProviderSummary } from "@/types";
 import { useBusyAction } from "@/hooks/use-busy-action";
+import { usePageStage } from "@/components/layout/page-stage";
 import { useToast } from "@/hooks/use-toast";
 import { StreamTestDialog, formatMs, type StreamTestOutcome } from "@/components/providers/stream-test-dialog";
 import { SiteImportDialog } from "@/components/providers/site-import-dialog";
@@ -119,7 +120,9 @@ export function ProvidersPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const refreshAction = useBusyAction({ minVisibleMs: 500 });
-  // 页面操作按钮挂到顶栏（SiteHeader 的 #site-header-actions 容器）
+  // 页面操作按钮挂到顶栏（SiteHeader 的 #site-header-actions 容器）。
+  // 路由保活会让本页在离开后仍保持挂载，非可见态必须停渲染，按钮才不会残留在别的页面
+  const stage = usePageStage();
   const [headerActionsEl, setHeaderActionsEl] = useState<HTMLElement | null>(null);
   useEffect(() => {
     setHeaderActionsEl(document.getElementById("site-header-actions"));
@@ -221,6 +224,7 @@ export function ProvidersPage() {
   return (
     <div className="space-y-6">
       {headerActionsEl &&
+        stage !== "idle" &&
         createPortal(
           <>
             <Button variant="outline" onClick={() => setSiteImportOpen(true)}>
@@ -557,11 +561,11 @@ function emptyDraft(protocol: ProviderApiType): ModelDraft {
     selected: true,
     advancedOpen: false,
     contextWindow: "",
-    supportsImage: false,
+    supportsImage: true,
     maxOutput: "",
     supportsVideo: false,
-    supportsPdf: false,
-    capStructured: false,
+    supportsPdf: true,
+    capStructured: true,
     capWebSearch: false,
     capMidSystem: false,
     levels: defaultLevels(protocol),

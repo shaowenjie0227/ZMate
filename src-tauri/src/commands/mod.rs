@@ -4,6 +4,7 @@ pub mod mcp;
 pub mod newapi;
 pub mod providers;
 pub mod sessions;
+pub mod site_direct;
 pub mod skills;
 pub mod system;
 pub mod tray_menu;

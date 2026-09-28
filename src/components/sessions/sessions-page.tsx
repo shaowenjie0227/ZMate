@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, CircleDashed, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowRightLeft, CheckCircle2, CircleDashed, Loader2, RefreshCw } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { useBusyAction } from "@/hooks/use-busy-action";
 import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { SessionTransferDialog } from "@/components/sessions/session-transfer-dialog";
+import { usePageStage } from "@/components/layout/page-stage";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -40,6 +42,14 @@ export function SessionsPage() {
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const refreshAction = useBusyAction({ minVisibleMs: 500 });
+  // 「会话迁移」按钮挂到顶栏（SiteHeader 的 #site-header-actions 容器）。
+  // 路由保活会让本页在离开后仍保持挂载，非可见态必须停渲染，按钮才不会残留在别的页面
+  const stage = usePageStage();
+  const [headerActionsEl, setHeaderActionsEl] = useState<HTMLElement | null>(null);
+  const [transferOpen, setTransferOpen] = useState(false);
+  useEffect(() => {
+    setHeaderActionsEl(document.getElementById("site-header-actions"));
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -82,18 +92,18 @@ export function SessionsPage() {
   };
 
   return (
-    <div className="space-y-4 overflow-y-auto p-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold">{t("sessions.title")}</h2>
-            <Badge variant="secondary" className="gap-1">
-              <ShieldCheck className="size-3" />
-              {t("sessions.readOnlyBadge")}
-            </Badge>
-          </div>
-          <p className="text-sm text-muted-foreground">{t("sessions.description")}</p>
-        </div>
+    <div className="space-y-3.5">
+      {headerActionsEl &&
+        stage !== "idle" &&
+        createPortal(
+          <Button variant="outline" onClick={() => setTransferOpen(true)}>
+            <ArrowRightLeft />
+            {t("sessions.transfer.button")}
+          </Button>,
+          headerActionsEl,
+        )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">{t("sessions.description")}</p>
         <Button variant="outline" size="icon" onClick={() => void refresh()} disabled={refreshAction.busy}>
           {refreshAction.busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
         </Button>
@@ -198,6 +208,8 @@ export function SessionsPage() {
           />
         </div>
       )}
+
+      <SessionTransferDialog open={transferOpen} onClose={() => setTransferOpen(false)} />
     </div>
   );
 }
