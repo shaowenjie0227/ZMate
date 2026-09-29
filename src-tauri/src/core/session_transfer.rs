@@ -808,12 +808,47 @@ fn execute_insert(
 
 /// 把会话包导入本地 ZCode。写库前自动备份两库到
 /// `zmate/backups/session-transfer/<时间戳>/`。
+/// 改写会话的工作区归属：workspace_key/path 指向目标目录，identity 清空（归属变了，旧标识不再适用）
+fn rewrite_workspace_row(row: &serde_json::Map<String, Value>, target: &str) -> serde_json::Map<String, Value> {
+    let mut row = row.clone();
+    row.insert("workspace_key".to_string(), Value::String(target.to_string()));
+    row.insert("workspace_path".to_string(), Value::String(target.to_string()));
+    if row.contains_key("workspace_identity") {
+        row.insert("workspace_identity".to_string(), Value::Null);
+    }
+    row
+}
+
 pub fn import_sessions(
     paths: &ZCodePaths,
     zip_path: &Path,
     mode: ImportMode,
+    target_workspace: Option<&str>,
     progress: Option<ProgressFn>,
 ) -> Result<TransferImportPayload, CoreError> {
+    // 目标目录：支持 ~ 前缀（展开为用户主目录）；不存在则自动创建（默认的「ZMate chat」即新建）
+    let target = target_workspace
+        .map(|t| t.trim().trim_end_matches('/').to_string())
+        .filter(|t| !t.is_empty());
+    let target = match target {
+        Some(t) if t == "~" || t.starts_with("~/") => {
+            let home = dirs::home_dir().ok_or_else(|| {
+                CoreError::InvalidData("无法获取用户主目录".to_string())
+            })?;
+            let expanded = if t == "~" {
+                home
+            } else {
+                home.join(t.replacen("~/", "", 1))
+            };
+            Some(expanded.to_string_lossy().to_string())
+        }
+        other => other,
+    };
+    if let Some(target) = &target {
+        std::fs::create_dir_all(target).map_err(|e| {
+            CoreError::InvalidData(format!("无法创建目标项目目录 {target}：{e}"))
+        })?;
+    }
     let (_, snapshots) = parse_zip(zip_path)?;
     let total = snapshots.len();
 
@@ -859,7 +894,11 @@ pub fn import_sessions(
                     ])?;
                 }
                 // 跳过模式遇到已存在行靠 OR IGNORE 兜底（同 workspace_key 主键不再重复插入）。
-                execute_insert(&tx, "tasks", &tasks_cols, row, true)?;
+                let row = match &target {
+                    Some(target) => rewrite_workspace_row(row, target),
+                    None => row.clone(),
+                };
+                execute_insert(&tx, "tasks", &tasks_cols, &row, true)?;
             }
         }
         tx.commit()?;
@@ -1109,7 +1148,7 @@ mod tests {
         )
         .unwrap();
 
-        let import = import_sessions(&paths, &zip_path, ImportMode::Skip, None).unwrap();
+        let import = import_sessions(&paths, &zip_path, ImportMode::Skip, None, None).unwrap();
         assert_eq!(import.imported, 2);
         assert_eq!(import.skipped, 0);
         assert_eq!(
@@ -1151,7 +1190,7 @@ mod tests {
         export_sessions(&paths, &["sess_a".into(), "sess_b".into()], &zip_path, None).unwrap();
 
         // 同库重复导入：skip 全部跳过。
-        let skipped = import_sessions(&paths, &zip_path, ImportMode::Skip, None).unwrap();
+        let skipped = import_sessions(&paths, &zip_path, ImportMode::Skip, None, None).unwrap();
         assert_eq!(skipped.imported, 0);
         assert_eq!(skipped.skipped, 2);
         assert_eq!(
@@ -1169,7 +1208,7 @@ mod tests {
             1
         );
 
-        let restored = import_sessions(&paths, &zip_path, ImportMode::Overwrite, None).unwrap();
+        let restored = import_sessions(&paths, &zip_path, ImportMode::Overwrite, None, None).unwrap();
         assert_eq!(restored.imported, 2, "overwrite 应覆盖已存在的 sess_b 并找回 sess_a");
         assert_eq!(
             count(&paths.session_db_path, "SELECT COUNT(*) FROM message"),
@@ -1219,4 +1258,96 @@ mod tests {
         let out = _root.join("empty.zip");
         assert!(export_sessions(&paths, &[], &out, None).is_err());
     }
+    #[test]
+    fn import_rewrites_workspace_to_target_dir() {
+        let (_root, paths) = setup_home("rewrite");
+        let zip_path = _root.join("out.zip");
+        export_sessions(&paths, &["sess_a".into()], &zip_path, None).unwrap();
+
+        // 重建带 workspace_path / workspace_identity 列的空库
+        std::fs::remove_file(&paths.tasks_db_path).unwrap();
+        std::fs::remove_file(&paths.session_db_path).unwrap();
+        let conn = Connection::open(&paths.tasks_db_path).unwrap();
+        conn.execute_batch("CREATE TABLE tasks (workspace_key TEXT NOT NULL, workspace_path TEXT, workspace_identity TEXT, task_id TEXT NOT NULL, title TEXT, updated_at INTEGER, PRIMARY KEY (workspace_key, task_id));").unwrap();
+        let conn = Connection::open(&paths.session_db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, version TEXT);
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT REFERENCES session(id) ON DELETE CASCADE, time_created INTEGER, data TEXT);
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT REFERENCES message(id) ON DELETE CASCADE, data TEXT);",
+        )
+        .unwrap();
+
+        // 目标目录必须真实存在
+        let target_dir = _root.join("target-project");
+        std::fs::create_dir_all(&target_dir).unwrap();
+
+        import_sessions(
+            &paths,
+            &zip_path,
+            ImportMode::Skip,
+            Some(target_dir.to_str().unwrap()),
+            None,
+        )
+        .unwrap();
+
+        let conn = Connection::open(&paths.tasks_db_path).unwrap();
+        let (key, path, identity): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT workspace_key, workspace_path, workspace_identity FROM tasks WHERE task_id='sess_a'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(key, target_dir.to_str().unwrap(), "workspace_key 应改写为目标目录");
+        assert_eq!(path, target_dir.to_str().unwrap(), "workspace_path 应改写为目标目录");
+        assert_eq!(identity, None, "workspace_identity 应清空");
+        // 不传目标时保持原 workspace_key
+        assert_eq!(
+            count(&paths.session_db_path, "SELECT COUNT(*) FROM session"),
+            1
+        );
+    }
+
+    #[test]
+    fn import_without_target_keeps_original_workspace() {
+        let (_root, paths) = setup_home("keep-ws");
+        let zip_path = _root.join("out.zip");
+        export_sessions(&paths, &["sess_a".into()], &zip_path, None).unwrap();
+
+        import_sessions(&paths, &zip_path, ImportMode::Skip, None, None).unwrap();
+        let conn = Connection::open(&paths.tasks_db_path).unwrap();
+        let key: String = conn
+            .query_row("SELECT workspace_key FROM tasks WHERE task_id='sess_a'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(key, "ws1", "未指定目标目录时应保留原 workspace_key");
+    }
+
+    #[test]
+    fn import_creates_missing_target_dir_and_expands_home() {
+        let (_root, paths) = setup_home("create-target");
+        let zip_path = _root.join("out.zip");
+        export_sessions(&paths, &["sess_a".into()], &zip_path, None).unwrap();
+
+        // 目标目录不存在：应自动创建（默认「ZMate chat」即新建语义）
+        let missing = _root.join("fresh-target").join("ZMate chat");
+        import_sessions(
+            &paths,
+            &zip_path,
+            ImportMode::Skip,
+            Some(missing.to_str().unwrap()),
+            None,
+        )
+        .unwrap();
+        assert!(missing.is_dir(), "目标目录应被自动创建");
+        let key: String = Connection::open(&paths.tasks_db_path)
+            .unwrap()
+            .query_row(
+                "SELECT workspace_key FROM tasks WHERE task_id='sess_a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(key, missing.to_str().unwrap());
+    }
+
 }

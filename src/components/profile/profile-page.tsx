@@ -124,9 +124,13 @@ export function ProfilePage({ onNavigate }: { onNavigate: (route: Route) => void
             ) : null}
             {profile && (
               <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                {t("profile.siteSource", {
-                  name: profile.systemName || "NewAPI",
-                })}
+                {connectionQuery.data?.data.authMethod === "password"
+                  ? t("profile.siteSourcePassword", {
+                      name: profile.systemName || "NewAPI",
+                    })
+                  : t("profile.siteSource", {
+                      name: profile.systemName || "NewAPI",
+                    })}
               </p>
             )}
           </div>

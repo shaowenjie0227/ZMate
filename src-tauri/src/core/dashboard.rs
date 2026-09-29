@@ -8,6 +8,7 @@ use crate::core::skills;
 use crate::platform::paths::ZCodePaths;
 use rusqlite::OpenFlags;
 use serde::Serialize;
+use chrono::{Datelike, TimeZone};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize)]
@@ -15,6 +16,14 @@ use std::path::Path;
 pub struct ActivityDay {
     pub date: String,
     pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HourlyDay {
+    pub date: String,
+    /// 24 个小时桶（本地时间 0-23 时）的活跃消息数
+    pub counts: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +56,8 @@ pub struct DashboardPayload {
     pub cli_config_valid: bool,
     pub cli_config_error: Option<String>,
     pub activity: Vec<ActivityDay>,
+    pub hourly_activity: Vec<HourlyDay>,
+    pub hourly_tokens: Vec<HourlyDay>,
     pub token_days: Vec<TokenDay>,
     pub generated_at: i64,
 }
@@ -79,6 +90,8 @@ pub fn load_dashboard(paths: &ZCodePaths) -> Result<DashboardPayload, CoreError>
 
     // --- 会话统计 ---
     let (session_count, activity) = session_stats(paths);
+    let hourly_activity = hourly_activity(paths);
+    let hourly_tokens = hourly_tokens(paths);
     let session_storage_bytes = storage_bytes(paths);
     let token_days = load_token_days(paths);
 
@@ -118,6 +131,8 @@ pub fn load_dashboard(paths: &ZCodePaths) -> Result<DashboardPayload, CoreError>
         cli_config_valid,
         cli_config_error,
         activity,
+        hourly_activity,
+        hourly_tokens,
         token_days,
         generated_at: current_timestamp(),
     })
@@ -183,6 +198,87 @@ fn session_stats(paths: &ZCodePaths) -> (i64, Vec<ActivityDay>) {
     (count, activity)
 }
 
+/// 最近 7 天按「本地日期 + 小时」的消息活跃数（供周视图小时热力图）
+fn hourly_activity(paths: &ZCodePaths) -> Vec<HourlyDay> {
+    if !paths.session_db_path.exists() {
+        return vec![];
+    }
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        &paths.session_db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return vec![];
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='message'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return vec![];
+    }
+
+    // 本自然年 1 月 1 日至今（覆盖年视图 12 个月、本月视图整月），24 个小时桶先填 0
+    let today = chrono::Local::now().date_naive();
+    let year_start = chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap_or(today);
+    let span = (today - year_start).num_days() as usize + 1;
+    let mut days: Vec<HourlyDay> = (0..span)
+        .rev()
+        .map(|i| HourlyDay {
+            date: (today - chrono::Duration::days(i as i64))
+                .format("%Y-%m-%d")
+                .to_string(),
+            counts: vec![0; 24],
+        })
+        .collect();
+    let cutoff_ms: i64 = days
+        .first()
+        .map(|d| {
+            chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d")
+                .map(|nd| {
+                    chrono::Local
+                        .from_local_datetime(&nd.and_hms_opt(0, 0, 0).unwrap())
+                        .single()
+                        .map(|dt| dt.with_timezone(&chrono::Utc).timestamp_millis())
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT date(time_created/1000, 'unixepoch', 'localtime') d, \
+                CAST(strftime('%H', time_created/1000, 'unixepoch', 'localtime') AS INTEGER) h, \
+                COUNT(*) c \
+         FROM message \
+         WHERE time_created IS NOT NULL AND time_created >= ?1 \
+         GROUP BY d, h",
+    ) else {
+        return vec![];
+    };
+    if let Ok(rows) = stmt.query_map([cutoff_ms], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    }) {
+        for row in rows.flatten() {
+            let (d, h, c) = row;
+            if let Some(day) = days.iter_mut().find(|day| day.date == d) {
+                if (0..24).contains(&h) {
+                    day.counts[h as usize] += c;
+                }
+            }
+        }
+    }
+    days
+}
+
 /// Token 按天聚合（model_usage.started_at 为 epoch 毫秒），库/表缺失时为空。
 fn load_token_days(paths: &ZCodePaths) -> Vec<TokenDay> {
     if !paths.session_db_path.exists() {
@@ -213,6 +309,86 @@ fn load_token_days(paths: &ZCodePaths) -> Vec<TokenDay> {
         }) {
             for row in rows.flatten() {
                 days.push(row);
+            }
+        }
+    }
+    days
+}
+
+/// 与 hourly_activity 同窗口，按「本地日期 + 小时」聚合 model_usage 的 token 总量（供周/月/年 Token 视图）
+fn hourly_tokens(paths: &ZCodePaths) -> Vec<HourlyDay> {
+    if !paths.session_db_path.exists() {
+        return vec![];
+    }
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        &paths.session_db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return vec![];
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_usage'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return vec![];
+    }
+
+    let today = chrono::Local::now().date_naive();
+    let year_start = chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap_or(today);
+    let span = (today - year_start).num_days() as usize + 1;
+    let mut days: Vec<HourlyDay> = (0..span)
+        .rev()
+        .map(|i| HourlyDay {
+            date: (today - chrono::Duration::days(i as i64))
+                .format("%Y-%m-%d")
+                .to_string(),
+            counts: vec![0; 24],
+        })
+        .collect();
+    let cutoff_ms: i64 = days
+        .first()
+        .map(|d| {
+            chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d")
+                .map(|nd| {
+                    chrono::Local
+                        .from_local_datetime(&nd.and_hms_opt(0, 0, 0).unwrap())
+                        .single()
+                        .map(|dt| dt.with_timezone(&chrono::Utc).timestamp_millis())
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT date(started_at/1000, 'unixepoch', 'localtime') d, \
+                CAST(strftime('%H', started_at/1000, 'unixepoch', 'localtime') AS INTEGER) h, \
+                COALESCE(SUM(input_tokens)+SUM(output_tokens)+SUM(reasoning_tokens),0) t \
+         FROM model_usage \
+         WHERE started_at IS NOT NULL AND started_at >= ?1 \
+         GROUP BY d, h",
+    ) else {
+        return vec![];
+    };
+    if let Ok(rows) = stmt.query_map([cutoff_ms], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    }) {
+        for row in rows.flatten() {
+            let (d, h, t) = row;
+            if let Some(day) = days.iter_mut().find(|day| day.date == d) {
+                if (0..24).contains(&h) {
+                    day.counts[h as usize] += t;
+                }
             }
         }
     }

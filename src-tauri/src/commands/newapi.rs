@@ -23,6 +23,7 @@ pub fn newapi_save_site_connection(
     app.site_base_url = base_url.trim().trim_end_matches('/').to_string();
     app.site_access_token = access_token.trim().to_string();
     app.site_user_id = user_id.unwrap_or(0);
+    app.site_auth_method = "token".into();
     settings::save_settings(&paths, &app).map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(true))
 }
@@ -35,6 +36,7 @@ pub fn newapi_clear_site_connection(
     app.site_base_url = String::new();
     app.site_access_token = String::new();
     app.site_user_id = 0;
+    app.site_auth_method = String::new();
     settings::save_settings(&paths, &app).map_err(|e| e.to_string())?;
     Ok(CoreEnvelope::ok(true))
 }
@@ -48,7 +50,8 @@ pub fn newapi_site_connection_status(
     let connected = !app.site_base_url.is_empty() && !app.site_access_token.is_empty();
     Ok(CoreEnvelope::ok(SiteConnectionStatusPayload {
         connected,
-        base_url: app.site_base_url,
+        base_url: app.site_base_url.clone(),
+        auth_method: app.site_auth_method,
     }))
 }
 
@@ -145,6 +148,7 @@ pub async fn newapi_login_with_password(
             app.site_base_url = base;
             app.site_access_token = access_token;
             app.site_user_id = if info.user_id > 0 { info.user_id } else { login_user_id };
+            app.site_auth_method = "password".into();
             settings::save_settings(&paths, &app)?;
             Ok(info)
         },

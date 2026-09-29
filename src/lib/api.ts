@@ -352,8 +352,16 @@ export const api = {
     invoke<CoreEnvelope<TransferPreviewPayload>>("inspect_session_zip", { zipPath }),
 
   /** 导入迁移包（mode: skip=跳过已存在 | overwrite=覆盖已存在）；进度走 session-transfer-progress 事件 */
-  importSessions: (zipPath: string, mode: "skip" | "overwrite") =>
-    invoke<CoreEnvelope<TransferImportPayload>>("import_sessions", { zipPath, mode }),
+  importSessions: (
+    zipPath: string,
+    mode: "skip" | "overwrite",
+    targetWorkspace?: string | null,
+  ) =>
+    invoke<CoreEnvelope<TransferImportPayload>>("import_sessions", {
+      zipPath,
+      mode,
+      targetWorkspace: targetWorkspace ?? null,
+    }),
 
   // ------------------------------------------------------------------
   // System

@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { SITE_DIRECT_ORIGINS } from "@/lib/site-direct";
 import { useThemeValue, type Theme } from "@/hooks/use-theme";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -249,8 +250,11 @@ export function AppSidebar({
     <Sidebar collapsible="icon" variant="inset">
       <SidebarHeader className="!p-0">
         <div className="h-12 shrink-0" data-tauri-drag-region />
-        <div
-          className="hidden justify-center group-data-[collapsible=icon]/sidebar:flex"
+        <button
+          type="button"
+          onClick={() => void api.openPath(SITE_DIRECT_ORIGINS.domain)}
+          title={SITE_DIRECT_ORIGINS.domain}
+          className="hidden w-full cursor-pointer justify-center group-data-[collapsible=icon]/sidebar:flex"
           style={{ marginTop: SIDEBAR_LOGO_TOP_OFFSET_PX }}
         >
           <img
@@ -259,11 +263,12 @@ export function AppSidebar({
             className="h-[35px] w-[35px] select-none rounded-full object-cover md:translate-x-1"
             draggable={false}
           />
-        </div>
+        </button>
         <button
           type="button"
-          onClick={() => onNavigate("providers")}
-          className="group/header flex w-full items-center gap-3 rounded-[10px] pl-2.5 pr-3 py-1 text-left transition-colors hover:bg-sidebar-accent group-data-[collapsible=icon]/sidebar:hidden"
+          onClick={() => void api.openPath(SITE_DIRECT_ORIGINS.domain)}
+          title={SITE_DIRECT_ORIGINS.domain}
+          className="group/header flex w-full cursor-pointer items-center gap-3 rounded-[10px] pl-2.5 pr-3 py-1 text-left transition-colors hover:bg-sidebar-accent group-data-[collapsible=icon]/sidebar:hidden"
           style={{ marginTop: SIDEBAR_LOGO_TOP_OFFSET_PX }}
         >
           <div className="relative h-[35px] w-[35px] shrink-0">

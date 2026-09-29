@@ -75,6 +75,11 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
   const [zipPath, setZipPath] = useState<string | null>(null);
   const [preview, setPreview] = useState<TransferPreviewPayload | null>(null);
   const [importMode, setImportMode] = useState<ImportMode>("skip");
+  // 工作区归属：zmateChat = 主目录新建「ZMate chat」（默认）；original = 保留原路径；local = 自选本机目录
+  const [targetMode, setTargetMode] = useState<"zmateChat" | "original" | "local">("zmateChat");
+  const [targetDir, setTargetDir] = useState<string | null>(null);
+  // 导出按项目（工作区）筛选与分组
+  const [projectFilter, setProjectFilter] = useState("all");
 
   // 每次打开都回到第 0 步并清空上一次的状态。
   useEffect(() => {
@@ -87,6 +92,9 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
       setZipPath(null);
       setPreview(null);
       setImportMode("skip");
+      setTargetMode("zmateChat");
+      setTargetDir(null);
+      setProjectFilter("all");
     }
   }, [open]);
 
@@ -128,13 +136,57 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
     if (step !== "export" && selectionInit) setSelectionInit(false);
   }, [step, selectionInit, sessions]);
 
+  // 项目（工作区）分组：key = 完整路径，显示名 = 文件夹名；按最近会话时间排序
+  const UNKNOWN_PROJECT = "__unknown__";
+  const projects = useMemo(() => {
+    const map = new Map<string, { path: string; name: string; latest: number }>();
+    for (const s of sessions) {
+      const key = s.workspacePath || UNKNOWN_PROJECT;
+      const name = s.workspacePath
+        ? s.workspacePath.split(/[\\/]/).filter(Boolean).pop() || s.workspacePath
+        : t("sessions.transfer.unknownProject");
+      const cur = map.get(key);
+      if (cur) {
+        cur.latest = Math.max(cur.latest, s.updatedAt);
+      } else {
+        map.set(key, { path: key, name, latest: s.updatedAt });
+      }
+    }
+    return [...map.values()].sort((a, b) => b.latest - a.latest);
+  }, [sessions, t]);
+
+  const scoped = useMemo(
+    () =>
+      projectFilter === "all"
+        ? sessions
+        : sessions.filter((s) => (s.workspacePath || UNKNOWN_PROJECT) === projectFilter),
+    [sessions, projectFilter],
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter(
+    if (!q) return scoped;
+    return scoped.filter(
       (s) => s.title.toLowerCase().includes(q) || s.taskId.toLowerCase().includes(q),
     );
-  }, [sessions, search]);
+  }, [scoped, search]);
+
+  // 筛选+搜索后的结果按项目分组（组序沿用 projects 的最近活跃排序）
+  const groups = useMemo(() => {
+    const map = new Map<string, SessionSummary[]>();
+    for (const s of filtered) {
+      const key = s.workspacePath || UNKNOWN_PROJECT;
+      const list = map.get(key);
+      if (list) list.push(s);
+      else map.set(key, [s]);
+    }
+    return projects
+      .filter((p) => map.has(p.path))
+      .map((p) => ({
+        ...p,
+        items: (map.get(p.path) ?? []).sort((a, b) => b.updatedAt - a.updatedAt),
+      }));
+  }, [projects, filtered]);
 
   const allFilteredSelected =
     filtered.length > 0 && filtered.every((s) => selectedIds.has(s.taskId));
@@ -144,6 +196,24 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
       const next = new Set(prev);
       if (next.has(taskId)) next.delete(taskId);
       else next.add(taskId);
+      return next;
+    });
+  };
+
+  const groupState = (items: SessionSummary[]): "all" | "some" | "none" => {
+    const all = items.every((s) => selectedIds.has(s.taskId));
+    const some = items.some((s) => selectedIds.has(s.taskId));
+    return all ? "all" : some ? "some" : "none";
+  };
+
+  const toggleGroup = (items: SessionSummary[]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const all = items.every((s) => next.has(s.taskId));
+      for (const s of items) {
+        if (all) next.delete(s.taskId);
+        else next.add(s.taskId);
+      }
       return next;
     });
   };
@@ -205,7 +275,16 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
   });
 
   const importMutation = useMutation({
-    mutationFn: () => api.importSessions(zipPath!, importMode),
+    mutationFn: () =>
+      api.importSessions(
+        zipPath!,
+        importMode,
+        targetMode === "zmateChat"
+          ? "~/ZMate chat"
+          : targetMode === "local"
+            ? targetDir
+            : null,
+      ),
     onSuccess: (res) => {
       toast({
         title: t("sessions.transfer.importDoneTitle"),
@@ -226,6 +305,12 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
         variant: "destructive",
       }),
   });
+
+  const handlePickTargetDir = async () => {
+    const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+    const path = await openDialog({ directory: true, multiple: false });
+    if (typeof path === "string") setTargetDir(path);
+  };
 
   const handleChooseZip = async () => {
     const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
@@ -309,15 +394,34 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
               </span>
             </div>
 
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t("sessions.transfer.searchPlaceholder")}
-              className="h-9"
-              disabled={busy}
-            />
+            <div className="flex gap-2">
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={t("sessions.transfer.searchPlaceholder")}
+                className="h-9 flex-1"
+                disabled={busy}
+              />
+              <Select
+                value={projectFilter}
+                onValueChange={setProjectFilter}
+                disabled={busy || projects.length === 0}
+              >
+                <SelectTrigger className="h-9 w-[170px] shrink-0">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t("sessions.transfer.projectAll")}</SelectItem>
+                  {projects.map((p) => (
+                    <SelectItem key={p.path} value={p.path} title={p.path}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-            <div className="max-h-[38vh] space-y-1.5 overflow-y-auto pr-1">
+            <div className="max-h-[38vh] space-y-3 overflow-y-auto pr-1">
               {listQuery.isLoading ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">
                   <Loader2 className="mx-auto size-4 animate-spin" />
@@ -327,36 +431,64 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
                   {t("sessions.transfer.noMatch")}
                 </p>
               ) : (
-                filtered.map((s) => {
-                  const checked = selectedIds.has(s.taskId);
+                groups.map((g) => {
+                  const st = groupState(g.items);
                   return (
-                    <label
-                      key={s.taskId}
-                      htmlFor={`transfer-x-${s.taskId}`}
-                      className={cn(
-                        "flex cursor-pointer items-center gap-2.5 rounded-xl border px-3 py-2 transition-colors",
-                        checked ? "border-primary bg-primary/8" : "border-border hover:bg-muted/50",
-                      )}
-                    >
-                      <Checkbox
-                        id={`transfer-x-${s.taskId}`}
-                        checked={checked}
-                        onCheckedChange={() => toggleOne(s.taskId)}
-                        disabled={busy}
-                        className="shrink-0"
-                      />
-                      <span className="min-w-0 flex-1 truncate text-sm">
-                        {s.title || s.taskId}
-                      </span>
-                      {s.archived && (
-                        <Badge variant="outline" className="shrink-0 text-[10px]">
-                          {t("sessions.includeArchived")}
-                        </Badge>
-                      )}
-                      <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                        {formatMillis(s.updatedAt, true)}
-                      </span>
-                    </label>
+                    <div key={g.path} className="space-y-1.5">
+                      <div
+                        role="checkbox"
+                        aria-checked={st === "all"}
+                        onClick={() => toggleGroup(g.items)}
+                        className="flex cursor-pointer items-center gap-2.5 rounded-lg bg-muted/60 px-3 py-1.5 transition-colors hover:bg-muted"
+                      >
+                        <Checkbox
+                          checked={st === "all" ? true : st === "some" ? "indeterminate" : false}
+                          className="shrink-0"
+                          tabIndex={-1}
+                        />
+                        <span
+                          className="min-w-0 flex-1 truncate text-sm font-medium"
+                          title={g.path === UNKNOWN_PROJECT ? undefined : g.path}
+                        >
+                          {g.name}
+                        </span>
+                        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                          {t("sessions.transfer.groupCount", { n: g.items.length })}
+                        </span>
+                      </div>
+                      {g.items.map((s) => {
+                        const checked = selectedIds.has(s.taskId);
+                        return (
+                          <label
+                            key={s.taskId}
+                            htmlFor={`transfer-x-${s.taskId}`}
+                            className={cn(
+                              "flex cursor-pointer items-center gap-2.5 rounded-xl border px-3 py-2 transition-colors",
+                              checked ? "border-primary bg-primary/8" : "border-border hover:bg-muted/50",
+                            )}
+                          >
+                            <Checkbox
+                              id={`transfer-x-${s.taskId}`}
+                              checked={checked}
+                              onCheckedChange={() => toggleOne(s.taskId)}
+                              disabled={busy}
+                              className="shrink-0"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-sm">
+                              {s.title || s.taskId}
+                            </span>
+                            {s.archived && (
+                              <Badge variant="outline" className="shrink-0 text-[10px]">
+                                {t("sessions.includeArchived")}
+                              </Badge>
+                            )}
+                            <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                              {formatMillis(s.updatedAt, true)}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
                   );
                 })
               )}
@@ -438,6 +570,62 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
                     </SelectContent>
                   </Select>
                 </div>
+                {/* 导入位置：保留原路径，或统一改挂到本机某个项目目录 */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="shrink-0 text-sm text-muted-foreground">
+                      {t("sessions.transfer.targetLabel")}
+                    </span>
+                    <Select
+                      value={targetMode}
+                      onValueChange={(v) => setTargetMode(v as "original" | "local")}
+                      disabled={busy}
+                    >
+                      <SelectTrigger className="h-9 w-[200px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="zmateChat">
+                          {t("sessions.transfer.targetZmateChat")}
+                        </SelectItem>
+                        <SelectItem value="original">
+                          {t("sessions.transfer.targetKeep")}
+                        </SelectItem>
+                        <SelectItem value="local">
+                          {t("sessions.transfer.targetLocal")}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {targetMode === "zmateChat" && (
+                    <p className="text-xs text-muted-foreground">
+                      {t("sessions.transfer.targetZmateChatHint")}
+                    </p>
+                  )}
+                  {targetMode === "local" && (
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void handlePickTargetDir()}
+                        disabled={busy}
+                      >
+                        <FolderOpen className="size-3.5" />
+                        {targetDir
+                          ? t("sessions.transfer.targetChange")
+                          : t("sessions.transfer.targetChoose")}
+                      </Button>
+                      <span
+                        className={cn(
+                          "min-w-0 truncate font-mono text-xs",
+                          targetDir ? "text-muted-foreground" : "text-muted-foreground/60",
+                        )}
+                      >
+                        {targetDir ?? t("sessions.transfer.targetNone")}
+                      </span>
+                    </div>
+                  )}
+                </div>
                 {importMode === "skip" && conflictCount > 0 && (
                   <p className="text-xs text-amber-600 dark:text-amber-400">
                     {t("sessions.transfer.skipHint", { conflicts: conflictCount })}
@@ -514,7 +702,12 @@ export function SessionTransferDialog({ open, onClose }: { open: boolean; onClos
               ) : (
                 <Button
                   onClick={() => importMutation.mutate()}
-                  disabled={busy || !preview || preview.total === 0}
+                  disabled={
+                    busy ||
+                    !preview ||
+                    preview.total === 0 ||
+                    (targetMode === "local" && !targetDir)
+                  }
                 >
                   {importMutation.isPending ? (
                     <Loader2 className="animate-spin" />

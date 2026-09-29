@@ -113,6 +113,7 @@ pub async fn import_sessions(
     paths: State<'_, Arc<ZCodePaths>>,
     zip_path: String,
     mode: Option<String>,
+    target_workspace: Option<String>,
 ) -> Result<CoreEnvelope<TransferImportPayload>, String> {
     let paths = paths.inner().clone();
     let payload = tauri::async_runtime::spawn_blocking(move || {
@@ -121,6 +122,7 @@ pub async fn import_sessions(
             &paths,
             std::path::Path::new(&zip_path),
             session_transfer::ImportMode::parse(mode.as_deref()),
+            target_workspace.as_deref(),
             Some(&|stage, done, total| {
                 let _ = handle.emit(
                     TRANSFER_PROGRESS_EVENT,

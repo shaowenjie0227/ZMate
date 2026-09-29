@@ -56,6 +56,8 @@ pub struct AppSettings {
     pub site_access_token: String,
     /// 站点接入：令牌归属的用户 ID（新版 new-api 的 New-Api-User 头必需；0 = 未知）。
     pub site_user_id: i64,
+    /// 站点接入：登录方式（token = 访问令牌，password = 账号密码；空 = 旧数据，按令牌展示）。
+    pub site_auth_method: String,
 }
 
 impl Default for AppSettings {
@@ -65,6 +67,7 @@ impl Default for AppSettings {
             site_base_url: String::new(),
             site_access_token: String::new(),
             site_user_id: 0,
+            site_auth_method: String::new(),
         }
     }
 }
@@ -309,6 +312,8 @@ pub struct ZcodeProxyPayload {
 pub struct SiteConnectionStatusPayload {
     pub connected: bool,
     pub base_url: String,
+    /// token = 访问令牌，password = 账号密码；空 = 旧数据
+    pub auth_method: String,
 }
 
 /// 用已存储的连接做一次真实校验的结果

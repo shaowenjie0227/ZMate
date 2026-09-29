@@ -37,6 +37,7 @@ export function SiteLoginPage() {
   });
   const connected = connectionQuery.data?.data.connected ?? false;
   const storedBaseUrl = connectionQuery.data?.data.baseUrl ?? "";
+  const authMethod = connectionQuery.data?.data.authMethod ?? "";
 
   const refreshConnectedData = () => {
     void queryClient.invalidateQueries({ queryKey: ["site-connection"] });
@@ -145,10 +146,16 @@ export function SiteLoginPage() {
 
         <div className="mt-3 space-y-1">
           <div className="flex items-center gap-2 text-xs">
-            <span className="text-muted-foreground">{t("siteLogin.tokenLabel")}</span>
+            <span className="text-muted-foreground">
+              {connected && authMethod === "password"
+                ? t("siteLogin.authMethodPassword")
+                : t("siteLogin.tokenLabel")}
+            </span>
             <span className={connected ? "text-foreground" : "text-muted-foreground/60"}>
               {connected
-                ? t("siteLogin.tokenSet")
+                ? authMethod === "password"
+                  ? t("siteLogin.passwordSet")
+                  : t("siteLogin.tokenSet")
                 : t("siteLogin.tokenUnset")}
             </span>
           </div>

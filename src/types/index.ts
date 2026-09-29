@@ -613,6 +613,8 @@ export interface NewApiUserProfile {
 export interface SiteConnectionStatusPayload {
   connected: boolean;
   baseUrl: string;
+  /** token = 访问令牌，password = 账号密码；空 = 旧数据 */
+  authMethod: string;
 }
 
 export interface SiteVerifyPayload {
@@ -659,6 +661,12 @@ export interface ActivityDay {
   count: number;
 }
 
+export interface HourlyActivityDay {
+  date: string;
+  /** 24 个小时桶（本地时间 0-23 时）的活跃消息数 */
+  counts: number[];
+}
+
 export interface TokenDay {
   date: string;
   inputTokens: number;
@@ -685,6 +693,8 @@ export interface DashboardPayload {
   cliConfigValid: boolean;
   cliConfigError: string | null;
   activity: ActivityDay[];
+  hourlyActivity: HourlyActivityDay[];
+  hourlyTokens: HourlyActivityDay[];
   tokenDays: TokenDay[];
   generatedAt: number;
 }

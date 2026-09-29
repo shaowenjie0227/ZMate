@@ -5,7 +5,12 @@ import { CircleCheck, CircleX, FolderOpen } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { ActivityDay, TokenDay } from "@/types";
-import { Heatmap, HeatmapLegend, type HeatmapDay } from "@/components/ui/heatmap";
+import {
+  HeatmapLegend,
+  HourHeatmapColumns,
+  MonthHeatmap,
+  type HeatmapDay,
+} from "@/components/ui/heatmap";
 import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
 import { BentoCard } from "@/components/ui/bento-card";
 import { Button } from "@/components/ui/button";
@@ -53,6 +58,103 @@ function buildHeatmapDays(
   return result;
 }
 
+
+/** 本周视图：取「本周一到本周日」的自然周（未来的天补空行占位） */
+function currentWeek(days: { date: string; counts: number[] }[]): { date: string; counts: number[] }[] {
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  const today = new Date();
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+  const week: { date: string; counts: number[] }[] = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    week.push(byDate.get(key) ?? { date: key, counts: Array(24).fill(0) });
+  }
+  return week;
+}
+
+
+/** 本月视图：当月 1 号到月末每天一条（缺失天补零），横轴为日期 */
+function currentMonth(days: { date: string; counts: number[] }[]): { date: string; counts: number[] }[] {
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const out: { date: string; counts: number[] }[] = [];
+  for (let d = 1; d <= lastDay; d++) {
+    const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    out.push(byDate.get(key) ?? { date: key, counts: Array(24).fill(0) });
+  }
+  return out;
+}
+
+
+/** 年视图：当前年 1-12 月全部展示，每个月补齐整月日历（无活动日为浅灰格子），顺序固定 */
+function chunkMonths(days: HeatmapDay[]): HeatmapDay[][] {
+  const year = new Date().getFullYear();
+  const byDate = new Map<string, HeatmapDay>();
+  for (const day of days) {
+    if (day.date.startsWith(String(year))) byDate.set(day.date, day);
+  }
+  const months: HeatmapDay[][] = [];
+  for (let m = 1; m <= 12; m++) {
+    const key = `${year}-${String(m).padStart(2, "0")}`;
+    const last = new Date(year, m, 0).getDate();
+    const month: HeatmapDay[] = [];
+    for (let d = 1; d <= last; d++) {
+      const date = `${key}-${String(d).padStart(2, "0")}`;
+      month.push(byDate.get(date) ?? { date, level: 0, count: 0 });
+    }
+    months.push(month);
+  }
+  return months;
+}
+
+const MINI_CELL = 9;
+const MINI_GAP = 2;
+
+/** 月迷你日历：7 列（周一到周日）× 行，格子按活跃等级着色 */
+function MonthMiniGrid({ days }: { days: HeatmapDay[] }) {
+  const cells: (HeatmapDay | null)[] = [];
+  const firstDow = new Date(days[0].date + "T00:00:00").getDay();
+  const mondayIndex = (firstDow + 6) % 7;
+  for (let i = 0; i < mondayIndex; i++) cells.push(null);
+  cells.push(...days);
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const width = 7 * (MINI_CELL + MINI_GAP) + MINI_GAP;
+  const rows = cells.length / 7;
+  const height = rows * (MINI_CELL + MINI_GAP) + MINI_GAP;
+
+  return (
+    <svg width={width} height={height} className="block">
+      {cells.map((day, i) => {
+        if (!day) return null;
+        const col = i % 7;
+        const row = Math.floor(i / 7);
+        return (
+          <rect
+            key={day.date}
+            x={col * (MINI_CELL + MINI_GAP) + MINI_GAP}
+            y={row * (MINI_CELL + MINI_GAP) + MINI_GAP}
+            width={MINI_CELL}
+            height={MINI_CELL}
+            rx={1.5}
+            fill={day.level === 0
+              ? "var(--heatmap-empty, hsl(var(--muted) / 0.5))"
+              : `color-mix(in srgb, var(--heatmap-color, #3FE6A1) ${[0, 25, 50, 75, 100][day.level] ?? 100}%, transparent)`}
+          >
+            <title>{`${day.date} · ${day.count}`}</title>
+          </rect>
+        );
+      })}
+    </svg>
+  );
+}
+
 export function OverviewPage() {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabKey>("activity");
@@ -71,6 +173,12 @@ export function OverviewPage() {
   });
   const usage = usageQuery.data?.data;
   const summary = usage?.summary ?? null;
+
+  // 当前 Tab 对应的小时级序列：活跃趋势 = 消息数；Token = token 总量
+  const hourlySeries = useMemo(() => {
+    if (!data) return [];
+    return tab === "activity" ? (data.hourlyActivity ?? []) : (data.hourlyTokens ?? []);
+  }, [data, tab]);
 
   const heatmapDays = useMemo(() => {
     const rangeDays = RANGE_DAYS[range];
@@ -100,9 +208,9 @@ export function OverviewPage() {
   }, [data, t]);
 
   return (
-    <div className="space-y-3.5">
+    <div className="flex h-full min-h-0 flex-col gap-3.5">
       {/* 站点余额与用量 */}
-      <div>
+      <div className="shrink-0">
         <div className="grid grid-cols-4 gap-4">
           <UsageCard
             accent="bg-sky-500"
@@ -151,7 +259,7 @@ export function OverviewPage() {
       </div>
 
       {/* 状态 + 健康 */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid shrink-0 gap-4 lg:grid-cols-2">
         <BentoCard compact>
           <p className="text-sm text-muted-foreground">{t("overview.zcodeTitle")}</p>
           {query.isLoading || !data ? (
@@ -242,25 +350,28 @@ export function OverviewPage() {
         </BentoCard>
       </div>
 
-      {/* 活跃趋势热力图 */}
-      <BentoCard className="p-4">
+      {/* 活跃趋势热力图：撑满剩余高度，内容超出时卡片内部滚动（页面本身不滚动） */}
+      <BentoCard className="flex min-h-0 flex-1 flex-col overflow-auto p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="rounded-full bg-muted p-0.5 dark:bg-white/[0.06]">
-            <AnimatedSegmentedControl
-              items={[
-                { value: "activity", label: t("overview.tabActivity") },
-                { value: "token", label: t("overview.tabToken") },
-              ]}
-              value={tab}
-              onValueChange={(v) => setTab(v as TabKey)}
-              className="gap-0.5"
-              indicatorClassName="rounded-full bg-white shadow-sm dark:bg-white/[0.10]"
-              itemClassName="rounded-full whitespace-nowrap px-3.5 py-1.5 text-xs font-medium"
-              activeItemClassName="text-foreground"
-              inactiveItemClassName="text-muted-foreground hover:text-foreground"
-            />
-          </div>
-          <div className="rounded-full bg-muted p-0.5 dark:bg-white/[0.06]">
+          {/* 活跃趋势 / Token：三个周期都可用（各周期按 Tab 选数据源，单位不同） */}
+          {(
+            <div className="rounded-full bg-muted p-0.5 dark:bg-white/[0.06]">
+              <AnimatedSegmentedControl
+                items={[
+                  { value: "activity", label: t("overview.tabActivity") },
+                  { value: "token", label: t("overview.tabToken") },
+                ]}
+                value={tab}
+                onValueChange={(v) => setTab(v as TabKey)}
+                className="gap-0.5"
+                indicatorClassName="rounded-full bg-white shadow-sm dark:bg-white/[0.10]"
+                itemClassName="rounded-full whitespace-nowrap px-3.5 py-1.5 text-xs font-medium"
+                activeItemClassName="text-foreground"
+                inactiveItemClassName="text-muted-foreground hover:text-foreground"
+              />
+            </div>
+          )}
+          <div className="ml-auto rounded-full bg-muted p-0.5 dark:bg-white/[0.06]">
             <AnimatedSegmentedControl
               items={[
                 { value: "week", label: t("overview.rangeWeek") },
@@ -278,16 +389,55 @@ export function OverviewPage() {
           </div>
         </div>
 
-        <h3 className="mt-4 font-semibold">{t("overview.trendTitle")}</h3>
         {query.isLoading || !data ? (
           <Skeleton className="mt-4 h-40 w-full rounded-xl" />
+        ) : range === "week" ? (
+          hourlySeries.length > 0 &&
+          hourlySeries.some((d) => d.counts.some((c) => c > 0)) ? (
+            <div className="mt-4">
+              <HourHeatmapColumns days={currentWeek(hourlySeries)} unit={tab === "token" ? "tokens" : "messages"} />
+              <div className="mt-3 flex justify-end">
+                <HeatmapLegend />
+              </div>
+            </div>
+          ) : (
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              {t("overview.noData")}
+            </div>
+          )
+        ) : range === "month" ? (
+          hourlySeries.length > 0 &&
+          hourlySeries.some((d) => d.counts.some((c) => c > 0)) ? (
+            <div className="mt-4">
+              <MonthHeatmap days={currentMonth(hourlySeries)} unit={tab === "token" ? "tokens" : "messages"} />
+              <div className="mt-3 flex justify-end">
+                <HeatmapLegend />
+              </div>
+            </div>
+          ) : (
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              {t("overview.noData")}
+            </div>
+          )
         ) : heatmapDays.every((d) => d.count === 0) ? (
           <div className="py-12 text-center text-sm text-muted-foreground">
             {t("overview.noData")}
           </div>
         ) : (
-          <div className="mt-4 overflow-x-auto pb-2">
-            <Heatmap data={heatmapDays} />
+          <div className="mt-4">
+            <div className="grid grid-cols-4 gap-3 xl:grid-cols-6">
+              {chunkMonths(heatmapDays).map((month) => (
+                <div
+                  key={month[0].date.slice(0, 7)}
+                  className="rounded-xl border border-border p-2.5"
+                >
+                  <p className="mb-1 text-[11px] font-medium text-muted-foreground">
+                    {t("overview.monthLabel", { m: Number(month[0].date.slice(5, 7)) })}
+                  </p>
+                  <MonthMiniGrid days={month} />
+                </div>
+              ))}
+            </div>
             <div className="mt-3 flex justify-end">
               <HeatmapLegend />
             </div>
@@ -312,16 +462,22 @@ function UsageCard({
   hint: string;
   loading?: boolean;
 }) {
+  const { t } = useTranslation();
+  const noData = !loading && amount == null;
   return (
     <div className="relative overflow-hidden rounded-2xl border border-border bg-card px-4 py-3">
       <span className={cn("absolute inset-x-0 top-0 h-[3px]", accent)} />
       <p className="text-xs font-medium tracking-wide text-muted-foreground">{label}</p>
-      {loading || amount == null ? (
-        <Skeleton className="mt-1.5 h-6 w-20" />
-      ) : (
-        <p className="mt-1 text-2xl font-bold tabular-nums leading-none">{amount}</p>
-      )}
-      <p className="mt-1.5 truncate text-xs text-muted-foreground">{hint}</p>
+      <div className="mt-1 flex h-6 items-center">
+        {loading || amount == null ? (
+          <Skeleton className="h-6 w-20" />
+        ) : (
+          <p className="text-2xl font-bold tabular-nums leading-none">{amount}</p>
+        )}
+      </div>
+      <p className="mt-1.5 h-4 truncate text-xs text-muted-foreground">
+        {noData ? t("overview.noData") : hint}
+      </p>
     </div>
   );
 }

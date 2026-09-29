@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { BentoCard } from "@/components/ui/bento-card";
 import { Button } from "@/components/ui/button";
 import { SegmentedOptions } from "@/components/ui/segmented-options";
+import { usePageStage } from "@/components/layout/page-stage";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -57,6 +59,14 @@ export function SkillsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["installed-skills"] }),
   });
 
+  // 页面操作控件挂到顶栏（SiteHeader 的 #site-header-actions 容器）。
+  // 路由保活会让本页在离开后仍保持挂载，非可见态必须停渲染，按钮才不会残留在别的页面
+  const stage = usePageStage();
+  const [headerActionsEl, setHeaderActionsEl] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setHeaderActionsEl(document.getElementById("site-header-actions"));
+  }, []);
+
   const removeMutation = useMutation({
     mutationFn: (id: string) => api.removeSkill(id),
     onSuccess: () => {
@@ -97,28 +107,32 @@ export function SkillsPage() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Page header */}
-      <div className="flex items-center justify-between">
-        <p className="max-w-md text-sm text-muted-foreground">{t("skills.description")}</p>
-        <div className="flex items-center gap-2">
-          <SegmentedOptions
-            items={[
-              { value: "installed", label: t("skills.installed") },
-              { value: "backups", label: t("skills.backups") },
-            ]}
-            value={tab}
-            onChange={(value) => setTab(value as Tab)}
-          />
-          <Button size="sm" onClick={() => importMutation.mutate()} disabled={importMutation.isPending}>
-            <Upload className="h-3.5 w-3.5" />
-            {t("skills.import")}
-          </Button>
-        </div>
-      </div>
+    <div className="flex h-full min-h-0 flex-col gap-6">
+      {headerActionsEl &&
+        stage !== "idle" &&
+        createPortal(
+          <>
+            <SegmentedOptions
+              items={[
+                { value: "installed", label: t("skills.installed") },
+                { value: "backups", label: t("skills.backups") },
+              ]}
+              value={tab}
+              onChange={(value) => setTab(value as Tab)}
+            />
+            <Button onClick={() => importMutation.mutate()} disabled={importMutation.isPending}>
+              <Upload />
+              {t("skills.import")}
+            </Button>
+          </>,
+          headerActionsEl,
+        )}
+
+      {/* 页头说明：单独一行铺满 */}
+      <p className="shrink-0 text-sm text-muted-foreground">{t("skills.description")}</p>
 
       {/* Stats row */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid shrink-0 grid-cols-4 gap-4">
         <BentoCard compact>
           <span className="text-xs text-muted-foreground">{t("skills.skillCount")}</span>
           <span className="mt-1 text-lg font-semibold">{skills.length}</span>
@@ -151,17 +165,17 @@ export function SkillsPage() {
         </BentoCard>
       </div>
 
-      {/* List content */}
+      {/* List content：撑满剩余高度，超出时内部滚动 */}
       {tab === "installed" ? (
         skills.length === 0 ? (
-          <BentoCard>
-            <div className="flex h-48 flex-col items-center justify-center">
+          <BentoCard className="flex min-h-0 flex-1 flex-col">
+            <div className="flex flex-1 flex-col items-center justify-center">
               <Sparkles className="h-10 w-10 text-muted-foreground/40" />
               <p className="mt-3 text-sm text-muted-foreground">{t("skills.empty")}</p>
             </div>
           </BentoCard>
         ) : (
-          <BentoCard className="p-0">
+          <BentoCard className="min-h-0 flex-1 overflow-y-auto p-0">
             <div className="divide-y divide-border">
               {skills.map((skill) => (
                 <div
@@ -190,14 +204,14 @@ export function SkillsPage() {
           </BentoCard>
         )
       ) : backups.length === 0 ? (
-        <BentoCard>
-          <div className="flex h-48 flex-col items-center justify-center">
+        <BentoCard className="flex min-h-0 flex-1 flex-col">
+          <div className="flex flex-1 flex-col items-center justify-center">
             <Archive className="h-10 w-10 text-muted-foreground/40" />
             <p className="mt-3 text-sm text-muted-foreground">{t("skills.noBackups")}</p>
           </div>
         </BentoCard>
       ) : (
-        <BentoCard className="p-0">
+        <BentoCard className="min-h-0 flex-1 overflow-y-auto p-0">
           <div className="divide-y divide-border">
             {backups.map((backup) => (
               <div

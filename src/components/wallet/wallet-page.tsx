@@ -21,8 +21,9 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
-/** 发卡网站（购买兑换码） */
+/** 发卡网站（购买兑换码）：主站与备用站 */
 const CARD_SHOP_URL = "https://catfk.com/shop/F641K27H";
+const CARD_SHOP_BACKUP_URL = "https://wzyp.cn/shop/IHCG1NO4";
 
 function money(quota: number, quotaPerUnit: number): string {
   const unit = quotaPerUnit > 0 ? quotaPerUnit : 500_000;
@@ -68,8 +69,8 @@ export function WalletPage() {
     },
   });
 
-  const openShop = async () => {
-    await api.openPath(CARD_SHOP_URL);
+  const openShop = async (url: string) => {
+    await api.openPath(url);
   };
 
   // ---- 推荐计划 / 已邀请用户 ----
@@ -227,13 +228,34 @@ export function WalletPage() {
                 <h3 className="font-semibold">{t("wallet.shopTitle")}</h3>
               </div>
               <p className="mt-1.5 text-xs text-muted-foreground">{t("wallet.shopDesc")}</p>
-              <Button variant="outline" size="sm" className="mt-4" onClick={() => void openShop()}>
-                <ExternalLink />
-                {t("wallet.shopAction")}
-              </Button>
-              <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground">
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => void openShop(CARD_SHOP_URL)}>
+                  <ExternalLink />
+                  {t("wallet.shopAction")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void openShop(CARD_SHOP_BACKUP_URL)}
+                >
+                  <ExternalLink />
+                  {t("wallet.shopBackupAction")}
+                </Button>
+              </div>
+              <button
+                type="button"
+                onClick={() => void openShop(CARD_SHOP_URL)}
+                className="mt-2 block break-all text-left font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
+              >
                 {CARD_SHOP_URL}
-              </p>
+              </button>
+              <button
+                type="button"
+                onClick={() => void openShop(CARD_SHOP_BACKUP_URL)}
+                className="block break-all text-left font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
+              >
+                {CARD_SHOP_BACKUP_URL}
+              </button>
             </BentoCard>
           </div>
 

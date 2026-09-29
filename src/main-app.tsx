@@ -194,7 +194,7 @@ function MainApp() {
     }
   };
 
-  // 不在侧边栏导航里的路由标题兜底（如登录令牌页，经「登录站点」/个人中心快捷入口进入）
+  // 不在侧边栏导航里的路由标题兜底（如站点登录页，经「登录站点」/个人中心快捷入口进入）
   const routeLabelKey =
     appNavItems.find((item) => item.route === route)?.labelKey ??
     (route === "siteLogin" ? "nav.siteLogin" : "nav.overview");
@@ -216,7 +216,7 @@ function MainApp() {
   ];
 
   // 满高页面：自身管理内部滚动（如使用日志的固定底部分页栏），Stage 不再整体滚动
-  const fillHeightRoutes = new Set<Route>(["usageLogs"]);
+  const fillHeightRoutes = new Set<Route>(["usageLogs", "mcp", "skills", "overview"]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#FFFFFF] dark:bg-background">

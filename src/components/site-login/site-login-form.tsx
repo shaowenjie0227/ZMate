@@ -94,8 +94,8 @@ export function SiteLoginForm({
     <div className="space-y-4">
       <SegmentedOptions
         items={[
-          { value: "token", label: t("siteLogin.methodToken") },
           { value: "password", label: t("siteLogin.methodPassword") },
+          { value: "token", label: t("siteLogin.methodToken") },
         ]}
         value={loginMethod}
         onChange={(value) => {

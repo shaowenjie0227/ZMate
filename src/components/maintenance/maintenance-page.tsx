@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { flushSync } from "react-dom";
-import { ArrowLeftRight, CircleCheck, CircleX, Download, ExternalLink, Loader2, Play, Waypoints } from "lucide-react";
+import { ArrowLeftRight, CircleCheck, CircleX, Download, ExternalLink, Gauge, Loader2, Play, Waypoints, Zap } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { SITE_DIRECT_ORIGINS, siteDirectApi, type SiteDirectPingResult } from "@/lib/site-direct";
@@ -201,6 +201,23 @@ export function MaintenancePage() {
     }
   };
 
+  // 测单个入口，返回结果（失败也归一成不可达的 ping 结果）
+  const pingTarget = async (target: (typeof DIRECT_TARGETS)[number]): Promise<SiteDirectPingResult> => {
+    try {
+      const response = await siteDirectApi.ping(target.key, target.origin);
+      return response.data;
+    } catch (error) {
+      return {
+        label: target.key,
+        origin: target.origin,
+        reachable: false,
+        statusCode: null,
+        latencyMs: null,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
   // 打开弹窗测试三个入口的可达性，由用户点选改换入口（选回主域名即恢复）
   const runDirectTest = async () => {
     setDirectTesting(true);
@@ -211,25 +228,15 @@ export function MaintenancePage() {
     );
 
     try {
-      const settled = await Promise.all(
+      const settled: { key: string; ping: SiteDirectPingResult }[] = [];
+      // 哪个入口先测完就先显示哪个，不等全部完成
+      await Promise.all(
         DIRECT_TARGETS.map(async (target) => {
-          try {
-            const response = await siteDirectApi.ping(target.key, target.origin);
-            return { key: target.key, ping: response.data };
-          } catch (error) {
-            const ping: SiteDirectPingResult = {
-              label: target.key,
-              origin: target.origin,
-              reachable: false,
-              statusCode: null,
-              latencyMs: null,
-              error: error instanceof Error ? error.message : String(error),
-            };
-            return { key: target.key, ping };
-          }
+          const ping = await pingTarget(target);
+          settled.push({ key: target.key, ping });
+          setDirectRows((prev) => ({ ...prev, [target.key]: { status: "done" as const, ping } }));
         }),
       );
-      setDirectRows(Object.fromEntries(settled.map(({ key, ping }) => [key, { status: "done" as const, ping }])));
 
       if (!settled.some(({ ping }) => ping.reachable)) {
         setDirectOutcome({ type: "allFailed" });
@@ -240,10 +247,24 @@ export function MaintenancePage() {
     }
   };
 
+  // 单独重测一个入口（点行右侧的延迟数字触发）
+  const pingOne = async (target: (typeof DIRECT_TARGETS)[number]) => {
+    setDirectRows((prev) => ({ ...prev, [target.key]: { status: "testing" as const } }));
+    const ping = await pingTarget(target);
+    setDirectRows((prev) => ({ ...prev, [target.key]: { status: "done" as const, ping } }));
+  };
+
   const openDirectDialog = () => {
     setDirectDialogOpen(true);
     void runDirectTest();
   };
+
+  // 弹窗内选中的目标入口：与当前入口不同才允许点「切换」
+  const directApplyTarget =
+    directSelectedOrigin != null &&
+    directSelectedOrigin !== (directQuery.data?.currentOrigin ?? null)
+      ? directSelectedOrigin
+      : null;
 
   const diagnoseMutation = useMutation({
     mutationFn: () => api.diagnose(),
@@ -331,11 +352,6 @@ export function MaintenancePage() {
 
   return (
     <div className="space-y-3.5">
-      <div className="space-y-1">
-        <h2 className="text-lg font-semibold">{t("maintenance.title")}</h2>
-        <p className="text-sm text-muted-foreground">{t("maintenance.description")}</p>
-      </div>
-
       <ActionCard
         title={t("maintenance.install")}
         description={t("maintenance.installDesc")}
@@ -475,15 +491,7 @@ export function MaintenancePage() {
           </Button>
         </div>
 
-        {directQuery.data?.directActive && directQuery.data.providerMatches != null && (
-          <p className="mt-3 break-all font-mono text-[11px] text-muted-foreground">
-            {t("maintenance.directCurrent", {
-              providers: directQuery.data.providerMatches,
-            })}
-          </p>
-        )}
-
-        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground/80">
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground/80">
           {t("maintenance.directHint")}
         </p>
       </BentoCard>
@@ -501,8 +509,8 @@ export function MaintenancePage() {
               const reachable = ping?.reachable ?? false;
               const selected = directSelectedOrigin === target.origin;
               const busy = directBusyOrigin === target.origin;
-              // 可点选 = 测试完成且该入口可达、当前不忙、且不是正在使用的入口
-              const selectable = ping != null && reachable && !directBusy && !busy && !selected;
+              // 可选中 = 测试完成且该入口可达、当前不忙；选中后由「切换」按钮统一生效
+              const selectable = ping != null && reachable && !directBusy && !busy;
               return (
                 <div
                   key={target.key}
@@ -511,12 +519,12 @@ export function MaintenancePage() {
                   aria-disabled={!selectable}
                   tabIndex={selectable ? 0 : -1}
                   onClick={() => {
-                    if (selectable) void applyDirectOrigin(target.origin);
+                    if (selectable) setDirectSelectedOrigin(target.origin);
                   }}
                   onKeyDown={(event) => {
                     if (selectable && (event.key === "Enter" || event.key === " ")) {
                       event.preventDefault();
-                      void applyDirectOrigin(target.origin);
+                      setDirectSelectedOrigin(target.origin);
                     }
                   }}
                   className={cn(
@@ -549,12 +557,18 @@ export function MaintenancePage() {
                         <span className="text-muted-foreground">{t("maintenance.directRowTesting")}</span>
                       </>
                     ) : ping.reachable ? (
-                      <>
-                        <CircleCheck className="size-3.5 text-emerald-500" />
-                        <span className="text-emerald-600 dark:text-emerald-400">
+                      <button
+                        type="button"
+                        onClick={() => void pingOne(target)}
+                        disabled={directTesting || busy}
+                        title={t("maintenance.directRetest")}
+                        className="flex cursor-pointer items-center gap-1.5 text-emerald-600 transition-opacity hover:opacity-80 disabled:cursor-default disabled:opacity-60 dark:text-emerald-400"
+                      >
+                        <Zap className="size-3.5" />
+                        <span className="tabular-nums">
                           {ping.latencyMs != null ? `${ping.latencyMs}ms` : `HTTP ${ping.statusCode ?? 0}`}
                         </span>
-                      </>
+                      </button>
                     ) : (
                       <>
                         <CircleX className="size-3.5 text-destructive" />
@@ -582,22 +596,29 @@ export function MaintenancePage() {
               {t("maintenance.directApplyFailed", { message: directOutcome.message })}
             </p>
           )}
-          {directOutcome &&
-            (directOutcome.type === "switched" || directOutcome.type === "restored") && (
-              <p className="break-all text-sm text-emerald-600 dark:text-emerald-400">
-                {directOutcome.type === "switched"
-                  ? t("maintenance.directSwitched", {
-                      origin: directOutcome.targetOrigin,
-                      count: directOutcome.providersUpdated,
-                    })
-                  : t("maintenance.directRestored", {
-                      origin: directOutcome.targetOrigin,
-                      count: directOutcome.providersUpdated,
-                    })}
-              </p>
-            )}
 
           <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => void runDirectTest()}
+              disabled={directTesting}
+            >
+              {directTesting ? <Loader2 className="animate-spin" /> : <Gauge />}
+              {t("maintenance.directSpeedTestButton")}
+            </Button>
+            <Button
+              disabled={!directApplyTarget || directBusy || directBusyOrigin != null}
+              onClick={() => {
+                if (directApplyTarget) void applyDirectOrigin(directApplyTarget);
+              }}
+            >
+              {directBusyOrigin ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <ArrowLeftRight />
+              )}
+              {t("maintenance.directApplyButton")}
+            </Button>
             <Button variant="outline" onClick={() => setDirectDialogOpen(false)}>
               {t("maintenance.close")}
             </Button>
@@ -676,7 +697,7 @@ export function MaintenancePage() {
           </div>
         )}
 
-        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground/80">
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground/80">
           {t("maintenance.proxyHint")}
         </p>
         {results.proxy && (

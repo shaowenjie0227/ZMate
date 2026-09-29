@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -40,6 +41,7 @@ import { toast } from "@/hooks/use-toast";
 import { Server, Plus, Pencil, Trash2, RotateCw, Copy } from "lucide-react";
 import type { McpServerSummary, McpTransport } from "@/types";
 import { useBusyAction } from "@/hooks/use-busy-action";
+import { usePageStage } from "@/components/layout/page-stage";
 
 const transportStyles: Record<string, { dot: string; text: string }> = {
   stdio: { dot: "bg-blue-500 shadow-[0_0_0_2px_rgba(59,130,246,0.2)]", text: "text-blue-500" },
@@ -65,6 +67,14 @@ export function McpPage() {
   const PAGE_SIZE = 15;
 
   const refreshAction = useBusyAction({ minVisibleMs: 800 });
+
+  // 页面操作按钮挂到顶栏（SiteHeader 的 #site-header-actions 容器）。
+  // 路由保活会让本页在离开后仍保持挂载，非可见态必须停渲染，按钮才不会残留在别的页面
+  const stage = usePageStage();
+  const [headerActionsEl, setHeaderActionsEl] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setHeaderActionsEl(document.getElementById("site-header-actions"));
+  }, []);
 
   const { data, refetch } = useQuery({
     queryKey: ["mcp-servers"],
@@ -119,33 +129,34 @@ export function McpPage() {
   }, [totalPages, safePage]);
 
   return (
-    <div className="space-y-6">
-      {/* Page header */}
-      <div className="flex items-center justify-between">
-        <p className="max-w-md text-sm text-muted-foreground">{t("mcp.description")}</p>
-        <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => setEditing("new")}>
-            <Plus className="h-3.5 w-3.5" />
-            {t("mcp.addServer")}
-          </Button>
-          <Button
-            variant="outline"
-            size="icon-sm"
-            onClick={handleRefresh}
-            disabled={refreshBusy}
-            aria-busy={refreshBusy}
-            title={refreshBusy ? t("common.refreshing") : t("common.refresh")}
-          >
-            <ButtonBusyContent
-              busy={refreshBusy}
-              idleIcon={<RotateCw className="h-3.5 w-3.5" />}
-            />
-          </Button>
-        </div>
-      </div>
+    <div className="flex h-full min-h-0 flex-col gap-6">
+      {headerActionsEl &&
+        stage !== "idle" &&
+        createPortal(
+          <>
+            <Button onClick={() => setEditing("new")}>
+              <Plus />
+              {t("mcp.addServer")}
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={handleRefresh}
+              disabled={refreshBusy}
+              aria-busy={refreshBusy}
+              title={refreshBusy ? t("common.refreshing") : t("common.refresh")}
+            >
+              <ButtonBusyContent busy={refreshBusy} idleIcon={<RotateCw />} />
+            </Button>
+          </>,
+          headerActionsEl,
+        )}
+
+      {/* 页头说明：单独一行铺满 */}
+      <p className="shrink-0 text-sm text-muted-foreground">{t("mcp.description")}</p>
 
       {/* Stats row */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid shrink-0 grid-cols-3 gap-4">
         <BentoCard compact>
           <span className="text-xs text-muted-foreground">{t("mcp.serverCount")}</span>
           <span className="mt-1 text-lg font-semibold">{servers.length}</span>
@@ -174,17 +185,17 @@ export function McpPage() {
         </BentoCard>
       </div>
 
-      {/* Server list */}
+      {/* Server list：撑满剩余高度，超出时内部滚动 */}
       {servers.length === 0 ? (
-        <BentoCard>
-          <div className="flex h-48 flex-col items-center justify-center">
+        <BentoCard className="flex min-h-0 flex-1 flex-col">
+          <div className="flex flex-1 flex-col items-center justify-center">
             <Server className="h-10 w-10 text-muted-foreground/40" />
             <p className="mt-3 text-sm text-muted-foreground">{t("mcp.empty")}</p>
           </div>
         </BentoCard>
       ) : (
         <>
-          <BentoCard className="p-0">
+          <BentoCard className="min-h-0 flex-1 overflow-y-auto p-0">
             <div className="divide-y divide-border">
               {pagedServers.map((server) => (
                 <div key={server.name} className="group flex items-center justify-between px-5 py-4 transition-colors hover:bg-accent">
@@ -234,38 +245,40 @@ export function McpPage() {
             </div>
           </BentoCard>
           {totalPages > 1 && (
-            <Pagination>
-              <PaginationContent>
-                <PaginationItem>
-                  <PaginationPrevious
-                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                    className={cn(currentPage <= 1 && "pointer-events-none opacity-50")}
-                  />
-                </PaginationItem>
-                {paginationRange.map((page, i) =>
-                  page === "ellipsis" ? (
-                    <PaginationItem key={`e${i}`}>
-                      <PaginationEllipsis />
-                    </PaginationItem>
-                  ) : (
-                    <PaginationItem key={page}>
-                      <PaginationLink
-                        isActive={page === currentPage}
-                        onClick={() => setCurrentPage(page as number)}
-                      >
-                        {page}
-                      </PaginationLink>
-                    </PaginationItem>
-                  )
-                )}
-                <PaginationItem>
-                  <PaginationNext
-                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                    className={cn(currentPage >= totalPages && "pointer-events-none opacity-50")}
-                  />
-                </PaginationItem>
-              </PaginationContent>
-            </Pagination>
+            <div className="shrink-0">
+              <Pagination>
+                <PaginationContent>
+                  <PaginationItem>
+                    <PaginationPrevious
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                      className={cn(currentPage <= 1 && "pointer-events-none opacity-50")}
+                    />
+                  </PaginationItem>
+                  {paginationRange.map((page, i) =>
+                    page === "ellipsis" ? (
+                      <PaginationItem key={`e${i}`}>
+                        <PaginationEllipsis />
+                      </PaginationItem>
+                    ) : (
+                      <PaginationItem key={page}>
+                        <PaginationLink
+                          isActive={page === currentPage}
+                          onClick={() => setCurrentPage(page as number)}
+                        >
+                          {page}
+                        </PaginationLink>
+                      </PaginationItem>
+                    )
+                  )}
+                  <PaginationItem>
+                    <PaginationNext
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                      className={cn(currentPage >= totalPages && "pointer-events-none opacity-50")}
+                    />
+                  </PaginationItem>
+                </PaginationContent>
+              </Pagination>
+            </div>
           )}
         </>
       )}
