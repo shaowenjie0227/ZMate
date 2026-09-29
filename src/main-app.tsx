@@ -101,9 +101,8 @@ function MainApp() {
   const { theme, setTheme } = useTheme();
   const { accent, setAccent, heatmap, setHeatmap } = useAccentColor();
   const { i18n, t } = useTranslation();
-  const [sidebarOpen, setSidebarOpen] = useState(
-    () => localStorage.getItem("sidebar_collapsed") !== "true",
-  );
+  // 每次启动都默认展开侧边栏（会话内仍可折叠，但不跨启动记忆）
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const update = useUpdateCheck();
   const showUpdateOverlay =
     update.status === "available" ||
@@ -222,10 +221,7 @@ function MainApp() {
     <div className="flex h-screen w-screen overflow-hidden bg-[#FFFFFF] dark:bg-background">
       <SidebarProvider
         open={sidebarOpen}
-        onOpenChange={(open) => {
-          setSidebarOpen(open);
-          localStorage.setItem("sidebar_collapsed", String(!open));
-        }}
+        onOpenChange={setSidebarOpen}
         style={
           {
             "--sidebar-width": `${SIDEBAR_EXPANDED_WIDTH_PX}px`,

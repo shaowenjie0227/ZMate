@@ -35,7 +35,7 @@ export function SiteLoginForm({
   const queryClient = useQueryClient();
 
   const [siteBase, setSiteBase] = useState(defaultSiteBase || AISPOT_BASE);
-  const [loginMethod, setLoginMethod] = useState<SiteLoginMethod>("token");
+  const [loginMethod, setLoginMethod] = useState<SiteLoginMethod>("password");
   const [accessToken, setAccessToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [userId, setUserId] = useState("");

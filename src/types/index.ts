@@ -675,6 +675,15 @@ export interface TokenDay {
   totalTokens: number;
 }
 
+export interface ModelTokenDay {
+  date: string;
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+}
+
 export interface DashboardPayload {
   providerCount: number;
   modelCount: number;
@@ -696,5 +705,6 @@ export interface DashboardPayload {
   hourlyActivity: HourlyActivityDay[];
   hourlyTokens: HourlyActivityDay[];
   tokenDays: TokenDay[];
+  modelTokenDays: ModelTokenDay[];
   generatedAt: number;
 }

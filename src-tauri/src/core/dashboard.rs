@@ -38,6 +38,17 @@ pub struct TokenDay {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelTokenDay {
+    pub date: String,
+    pub model_id: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_tokens: i64,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DashboardPayload {
     pub provider_count: usize,
     pub model_count: usize,
@@ -59,6 +70,7 @@ pub struct DashboardPayload {
     pub hourly_activity: Vec<HourlyDay>,
     pub hourly_tokens: Vec<HourlyDay>,
     pub token_days: Vec<TokenDay>,
+    pub model_token_days: Vec<ModelTokenDay>,
     pub generated_at: i64,
 }
 
@@ -94,6 +106,7 @@ pub fn load_dashboard(paths: &ZCodePaths) -> Result<DashboardPayload, CoreError>
     let hourly_tokens = hourly_tokens(paths);
     let session_storage_bytes = storage_bytes(paths);
     let token_days = load_token_days(paths);
+    let model_token_days = load_model_token_days(paths);
 
     // --- 健康检查（与维护页 diagnose 同一套判定） ---
     let path = |p: &Path, key: &str| DiagnosePathCheck {
@@ -134,6 +147,7 @@ pub fn load_dashboard(paths: &ZCodePaths) -> Result<DashboardPayload, CoreError>
         hourly_activity,
         hourly_tokens,
         token_days,
+        model_token_days,
         generated_at: current_timestamp(),
     })
 }
@@ -305,6 +319,66 @@ fn load_token_days(paths: &ZCodePaths) -> Vec<TokenDay> {
                 output_tokens: row.get::<_, i64>(2)?,
                 reasoning_tokens: row.get::<_, i64>(3)?,
                 total_tokens: row.get::<_, i64>(4)?,
+            })
+        }) {
+            for row in rows.flatten() {
+                days.push(row);
+            }
+        }
+    }
+    days
+}
+
+/// Token 按天 × 模型聚合（本自然年窗口，供模型占比环形图），库/表缺失时为空。
+fn load_model_token_days(paths: &ZCodePaths) -> Vec<ModelTokenDay> {
+    if !paths.session_db_path.exists() {
+        return vec![];
+    }
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        &paths.session_db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return vec![];
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_usage'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return vec![];
+    }
+
+    // 与 hourly_tokens 同窗口：本自然年 1 月 1 日至今
+    let today = chrono::Local::now().date_naive();
+    let year_start = chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap_or(today);
+    let cutoff_ms: i64 = chrono::Local
+        .from_local_datetime(&year_start.and_hms_opt(0, 0, 0).unwrap())
+        .single()
+        .map(|dt| dt.with_timezone(&chrono::Utc).timestamp_millis())
+        .unwrap_or(0);
+
+    let mut days = Vec::new();
+    let sql = "SELECT date(started_at/1000, 'unixepoch', 'localtime') d, model_id m, \
+               COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), \
+               COALESCE(SUM(reasoning_tokens),0), \
+               COALESCE(SUM(input_tokens)+SUM(output_tokens)+SUM(reasoning_tokens),0) \
+               FROM model_usage \
+               WHERE started_at IS NOT NULL AND started_at >= ?1 \
+               GROUP BY d, m ORDER BY d";
+    if let Ok(mut stmt) = conn.prepare(sql) {
+        if let Ok(rows) = stmt.query_map([cutoff_ms], |row| {
+            Ok(ModelTokenDay {
+                date: row.get::<_, String>(0)?,
+                model_id: row.get::<_, String>(1)?,
+                input_tokens: row.get::<_, i64>(2)?,
+                output_tokens: row.get::<_, i64>(3)?,
+                reasoning_tokens: row.get::<_, i64>(4)?,
+                total_tokens: row.get::<_, i64>(5)?,
             })
         }) {
             for row in rows.flatten() {
