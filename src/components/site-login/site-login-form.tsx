@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, Loader2, LogIn } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { siteDirectApi } from "@/lib/site-direct";
 import { useToast } from "@/hooks/use-toast";
 import type { NewApiSiteInfo } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -21,10 +22,11 @@ type SiteLoginMethod = "token" | "password";
  * 登录令牌页与站点接入向导的登录浮窗共用。
  */
 export function SiteLoginForm({
-  defaultSiteBase = AISPOT_BASE,
+  defaultSiteBase,
   onSuccess,
   externalError = null,
 }: {
+  /** 调用方明确指定的默认站点地址（如已存连接的地址）；未传时跟随直连入口，再回落主域名 */
   defaultSiteBase?: string;
   onSuccess: (info: NewApiSiteInfo, base: string) => void;
   /** 外部传入的错误（如向导里存储连接失效），与本表单自身错误同位显示 */
@@ -34,7 +36,19 @@ export function SiteLoginForm({
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const [siteBase, setSiteBase] = useState(defaultSiteBase || AISPOT_BASE);
+  // 面板最近选择的站点入口（IP 直连切换后随之变化），作为站点地址的默认值来源之一
+  const directOriginQuery = useQuery({
+    queryKey: ["site-direct"],
+    queryFn: async () => (await siteDirectApi.status()).data,
+  });
+  const effectiveDefault =
+    defaultSiteBase || directOriginQuery.data?.currentOrigin || AISPOT_BASE;
+  const [siteBase, setSiteBase] = useState(effectiveDefault);
+  const [siteBaseEdited, setSiteBaseEdited] = useState(false);
+  // 直连切换后默认地址常晚于表单挂载到达：用户没手改过站点地址就跟进去
+  useEffect(() => {
+    if (!siteBaseEdited) setSiteBase(effectiveDefault);
+  }, [effectiveDefault, siteBaseEdited]);
   const [loginMethod, setLoginMethod] = useState<SiteLoginMethod>("password");
   const [accessToken, setAccessToken] = useState("");
   const [showToken, setShowToken] = useState(false);
@@ -107,7 +121,10 @@ export function SiteLoginForm({
         <Label>{t("siteLogin.siteUrlLabel")}</Label>
         <Input
           value={siteBase}
-          onChange={(e) => setSiteBase(e.target.value)}
+          onChange={(e) => {
+            setSiteBase(e.target.value);
+            setSiteBaseEdited(true);
+          }}
           className="font-mono"
           placeholder="https://your-site.example.com"
         />

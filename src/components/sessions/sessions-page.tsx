@@ -94,7 +94,7 @@ export function SessionsPage() {
   return (
     <div className="space-y-3.5">
       {headerActionsEl &&
-        stage !== "idle" &&
+        stage === "active" &&
         createPortal(
           <Button variant="outline" onClick={() => setTransferOpen(true)}>
             <ArrowRightLeft />

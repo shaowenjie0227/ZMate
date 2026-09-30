@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Copy, Import, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 
-import { api } from "@/lib/api";
+import { api, resolvePlainTokenKey } from "@/lib/api";
 import { useBusyAction } from "@/hooks/use-busy-action";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -107,13 +107,8 @@ export function ApiKeysPage() {
   };
 
   const copyKey = async (token: NewApiTokenInfo) => {
-    // 新版 new-api 列表返回的 key 是脱敏串（tzPX**********UpRs），需向站点专用端点取明文
-    let raw = token.key;
-    if (!raw || raw.includes("*")) {
-      const revealed = await api.newapiRevealTokenKey(token.id, null, null);
-      raw = revealed.data ?? "";
-    }
-    if (!raw || raw.includes("*")) {
+    const raw = await resolvePlainTokenKey(token);
+    if (!raw) {
       toast({
         title: t("apiKeys.copyMaskedTitle"),
         description: t("apiKeys.copyMaskedDesc"),
@@ -165,7 +160,9 @@ export function ApiKeysPage() {
       if (!base) throw new Error(t("apiKeys.importNoSiteBase"));
       const modelsRes = await api.newapiListModels(null, null);
       if (modelsRes.data.length === 0) throw new Error(t("apiKeys.importNoModels"));
-      const full = token.key.startsWith("sk-") ? token.key : `sk-${token.key}`;
+      const raw = await resolvePlainTokenKey(token);
+      if (!raw) throw new Error(t("apiKeys.copyMaskedDesc"));
+      const full = raw.startsWith("sk-") ? raw : `sk-${raw}`;
       const res = await api.upsertProvider({
         providerId: null,
         providerName: token.name.trim() || "NewAPI",

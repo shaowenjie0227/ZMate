@@ -58,6 +58,9 @@ pub struct AppSettings {
     pub site_user_id: i64,
     /// 站点接入：登录方式（token = 访问令牌，password = 账号密码；空 = 旧数据，按令牌展示）。
     pub site_auth_method: String,
+    /// IP 直连：用户最近选择的站点入口。断开连接后仍保留，
+    /// 登录页 / 站点接入向导的站点地址默认值跟随它。
+    pub site_direct_origin: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -68,6 +71,7 @@ impl Default for AppSettings {
             site_access_token: String::new(),
             site_user_id: 0,
             site_auth_method: String::new(),
+            site_direct_origin: None,
         }
     }
 }

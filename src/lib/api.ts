@@ -405,6 +405,24 @@ export const api = {
     invoke<CoreEnvelope<DashboardPayload>>("load_dashboard"),
 };
 
+/**
+ * 新版 new-api 的令牌列表/搜索接口一律返回脱敏 key（tzPX**********UpRs 形态），
+ * 注入/复制前必须经站点专用端点取回明文；取不到时返回 null。
+ */
+export async function resolvePlainTokenKey(
+  token: Pick<NewApiTokenInfo, "id" | "key">,
+): Promise<string | null> {
+  if (token.key && !token.key.includes("*")) return token.key;
+  try {
+    const revealed = await api.newapiRevealTokenKey(token.id, null, null);
+    const raw = revealed.data ?? "";
+    if (raw && !raw.includes("*")) return raw;
+  } catch {
+    // 站点不支持明文端点或请求失败，按取不到明文处理
+  }
+  return null;
+}
+
 type SystemInfo = {
   os: string;
   osVersion: string;

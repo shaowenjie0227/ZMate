@@ -19,7 +19,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { BentoCard } from "@/components/ui/bento-card";
 import { Button } from "@/components/ui/button";
-import { SiteLoginForm, AISPOT_BASE } from "@/components/site-login/site-login-form";
+import { SiteLoginForm } from "@/components/site-login/site-login-form";
 import { cn } from "@/lib/utils";
 
 export function SiteLoginPage() {
@@ -174,7 +174,7 @@ export function SiteLoginPage() {
       {showForm && (
         <BentoCard className="p-5">
           <SiteLoginForm
-            defaultSiteBase={storedBaseUrl || AISPOT_BASE}
+            defaultSiteBase={storedBaseUrl || undefined}
             onSuccess={(info) => {
               setConnectedInfo(info);
               setEditing(false);

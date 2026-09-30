@@ -15,7 +15,7 @@ import {
   Sparkles,
 } from "lucide-react";
 
-import { api } from "@/lib/api";
+import { api, resolvePlainTokenKey } from "@/lib/api";
 import type {
   NewApiGroupInfo,
   NewApiSiteInfo,
@@ -109,8 +109,8 @@ function emptyImportConfig(protocol: ProviderApiType): ImportModelConfig {
     maxOutput: "192000",
     inputImage: true,
     inputVideo: false,
-    inputPdf: false,
-    capStructured: false,
+    inputPdf: true,
+    capStructured: true,
     capWebSearch: false,
     capMidSystem: false,
     levels: protocolReasoningLevels(protocol),
@@ -150,6 +150,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
   const [pathLoading, setPathLoading] = useState<ImportPath | null>(null);
   const [tokens, setTokens] = useState<NewApiTokenInfo[] | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState<number | null>(null);
+  const [revealingKey, setRevealingKey] = useState(false);
 
   // 「我还没有创建 key」
   const [groups, setGroups] = useState<NewApiGroupInfo[] | null>(null);
@@ -175,7 +176,8 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
 
   // 模型导入配置：上下文档位 / 更多设置 / 推理等级
   const [modelConfigs, setModelConfigs] = useState<Record<string, ImportModelConfig>>({});
-  const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
+  const [moreSettingsOpen, setMoreSettingsOpen] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
 
   const ensureModelConfig = (id: string): ImportModelConfig =>
     modelConfigs[id] ?? emptyImportConfig(protocol);
@@ -184,14 +186,6 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
       ...prev,
       [id]: { ...(prev[id] ?? emptyImportConfig(protocol)), ...patch },
     }));
-  };
-  const toggleModelExpanded = (id: string) => {
-    setExpandedModels((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   };
 
   const { data: systemInfo } = useQuery({
@@ -229,7 +223,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
     setManualInput("");
     setModelsInfo(null);
     setModelConfigs({});
-    setExpandedModels(new Set());
+    setMoreSettingsOpen(false);
   }, [open]);
 
   useEffect(() => {
@@ -361,7 +355,7 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
     setManualInput("");
     setModelsInfo(null);
     setModelConfigs({});
-    setExpandedModels(new Set());
+    setMoreSettingsOpen(false);
     setStep("finish");
 
     if (opts.source === "site") {
@@ -403,8 +397,47 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
       for (const id of items) next[id] = prev[id] ?? emptyImportConfig(protocol);
       return next;
     });
-    // 模型卡「更多设置」默认全部展开
-    setExpandedModels(new Set(items));
+    setModelsInfo(t("providers.wizard.fetchSuccess", { count: items.length }));
+  };
+
+  /** 「获取模型」：用当前协议 / 地址 / Key 实时拉取接口真实返回的模型列表 */
+  const refetchModels = async () => {
+    const url = presetBaseUrlFor(finishBaseUrl.trim(), protocol);
+    if (!url || !apiKey.trim() || fetchingModels) return;
+    setFetchingModels(true);
+    setModelsInfo(t("providers.wizard.fetching"));
+    try {
+      const res = await api.fetchProviderModels(protocol, url, apiKey.trim());
+      applyFetchedModels(res.data.items);
+    } catch (error) {
+      setModelsInfo(
+        error instanceof Error && error.message
+          ? error.message
+          : t("providers.site.siteFetchModelsFailed"),
+      );
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
+  /** 以接口返回为准刷新列表：交集保留勾选与配置，新模型默认勾选 */
+  const applyFetchedModels = (items: string[]) => {
+    if (items.length === 0) {
+      setModelsInfo(t("providers.wizard.noModels"));
+      return;
+    }
+    const previous = models;
+    const nextConfigs: Record<string, ImportModelConfig> = {};
+    for (const id of items) nextConfigs[id] = modelConfigs[id] ?? emptyImportConfig(protocol);
+    setModels(items);
+    setModelConfigs(nextConfigs);
+    setSelectedModels((prev) => {
+      const next = new Set<string>();
+      for (const id of items) {
+        if (prev.has(id) || !previous.includes(id)) next.add(id);
+      }
+      return next;
+    });
     setModelsInfo(t("providers.wizard.fetchSuccess", { count: items.length }));
   };
 
@@ -512,11 +545,6 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
       return next;
     });
     setSelectedModels((prev) => {
-      const next = new Set(prev);
-      for (const id of ids) next.add(id);
-      return next;
-    });
-    setExpandedModels((prev) => {
       const next = new Set(prev);
       for (const id of ids) next.add(id);
       return next;
@@ -821,12 +849,12 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
               />
             </div>
 
-            {models.length > 0 && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
-                    {t("providers.site.modelsSection", { count: selectedModels.size })}
-                  </p>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                  {t("providers.site.modelsSection", { count: selectedModels.size })}
+                </p>
+                <div className="flex items-center gap-1">
                   <Button
                     type="button"
                     variant="ghost"
@@ -841,58 +869,78 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                       ? t("providers.site.clearAll")
                       : t("providers.site.selectAll")}
                   </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    disabled={fetchingModels || !apiKey.trim()}
+                    onClick={refetchModels}
+                  >
+                    {fetchingModels && <Loader2 className="size-3.5 animate-spin" />}
+                    {t("providers.site.fetchModels")}
+                  </Button>
                 </div>
-                <div className="max-h-[26rem] space-y-1.5 overflow-y-auto rounded-xl border border-border p-2">
-                  {models.map((id) => {
-                    const cfg = ensureModelConfig(id);
-                    const expanded = expandedModels.has(id);
-                    const activeTier = CONTEXT_TIERS.find(
-                      (tier) =>
-                        cfg.contextWindow === String(tier.context) &&
-                        cfg.maxOutput === String(tier.maxOutput),
-                    );
-                    return (
-                      <div
-                        key={id}
-                        className={cn(
-                          "rounded-xl border px-2 py-1.5 transition-colors",
-                          expanded
-                            ? "border-primary/40 bg-primary/4"
-                            : "border-transparent hover:bg-muted/40",
-                        )}
-                      >
-                        <div className="flex items-center gap-2">
-                          <Checkbox
-                            checked={selectedModels.has(id)}
-                            onCheckedChange={(checked) =>
-                              setSelectedModels((prev) => {
-                                const next = new Set(prev);
-                                if (checked === true) next.add(id);
-                                else next.delete(id);
-                                return next;
-                              })
-                            }
-                          />
-                          <span className="min-w-0 flex-1 truncate font-mono text-sm">{id}</span>
-                          <button
-                            type="button"
-                            onClick={() => toggleModelExpanded(id)}
-                            className={cn(
-                              "flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
-                              expanded
-                                ? "text-foreground"
-                                : "text-muted-foreground hover:text-foreground",
-                            )}
-                          >
-                            {expanded ? (
-                              <ChevronUp className="size-3.5" />
-                            ) : (
-                              <ChevronDown className="size-3.5" />
-                            )}
-                            {t("providers.site.moreSettings")}
-                          </button>
-                        </div>
-                        {expanded && (
+              </div>
+              {models.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+                  {t("providers.site.modelsEmpty")}
+                </p>
+              ) : (
+                <div className="max-h-64 space-y-0.5 overflow-y-auto rounded-xl border border-border p-2">
+                  {models.map((id) => (
+                    <div
+                      key={id}
+                      className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-muted/40"
+                    >
+                      <Checkbox
+                        checked={selectedModels.has(id)}
+                        onCheckedChange={(checked) =>
+                          setSelectedModels((prev) => {
+                            const next = new Set(prev);
+                            if (checked === true) next.add(id);
+                            else next.delete(id);
+                            return next;
+                          })
+                        }
+                      />
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm">{id}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {models.length > 0 && (
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => setMoreSettingsOpen((v) => !v)}
+                  className={cn(
+                    "flex items-center gap-1.5 text-sm font-medium transition-colors",
+                    moreSettingsOpen
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {moreSettingsOpen ? (
+                    <ChevronUp className="size-4" />
+                  ) : (
+                    <ChevronDown className="size-4" />
+                  )}
+                  {t("providers.site.moreSettings")}
+                </button>
+                {moreSettingsOpen && (
+                  <div className="max-h-[26rem] space-y-1.5 overflow-y-auto rounded-xl border border-border p-2">
+                    {models.map((id) => {
+                      const cfg = ensureModelConfig(id);
+                      const activeTier = CONTEXT_TIERS.find(
+                        (tier) =>
+                          cfg.contextWindow === String(tier.context) &&
+                          cfg.maxOutput === String(tier.maxOutput),
+                      );
+                      return (
+                        <div key={id} className="rounded-xl border border-border/60 px-2.5 py-2">
+                          <p className="px-0.5 font-mono text-xs font-medium">{id}</p>
                           <div className="mt-2 space-y-2.5 border-t border-border/60 pt-2.5">
                             <div className="flex flex-wrap items-center gap-1.5">
                               <Label className="text-xs text-muted-foreground">
@@ -1059,11 +1107,11 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
                               </div>
                             </div>
                           </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1099,17 +1147,31 @@ export function SiteImportDialog({ open, onClose }: { open: boolean; onClose: ()
 
           {step === "pick" && (
             <Button
-              disabled={!selectedToken?.key}
-              onClick={() => {
+              disabled={!selectedToken?.key || revealingKey}
+              onClick={async () => {
                 if (!selectedToken) return;
-                setApiKey(normalizeKey(selectedToken.key));
-                enterFinish({
-                  name: siteInfo?.systemName ?? "NewAPI",
-                  protocol: "openai-responses",
-                  baseUrl: presetBaseUrlFor(siteBase.trim(), "openai-responses"),
-                  source: "site",
-                  group: selectedToken.group || null,
-                });
+                setRevealingKey(true);
+                try {
+                  const plain = await resolvePlainTokenKey(selectedToken);
+                  if (!plain) {
+                    toast({
+                      title: t("providers.site.keyMaskedTitle"),
+                      description: t("providers.site.keyMaskedDesc"),
+                      variant: "destructive",
+                    });
+                    return;
+                  }
+                  setApiKey(normalizeKey(plain));
+                  enterFinish({
+                    name: siteInfo?.systemName ?? "NewAPI",
+                    protocol: "openai-responses",
+                    baseUrl: presetBaseUrlFor(siteBase.trim(), "openai-responses"),
+                    source: "site",
+                    group: selectedToken.group || null,
+                  });
+                } finally {
+                  setRevealingKey(false);
+                }
               }}
             >
               {t("providers.wizard.confirmInject")}

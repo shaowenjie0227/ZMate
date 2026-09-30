@@ -109,7 +109,7 @@ export function SkillsPage() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-6">
       {headerActionsEl &&
-        stage !== "idle" &&
+        stage === "active" &&
         createPortal(
           <>
             <SegmentedOptions

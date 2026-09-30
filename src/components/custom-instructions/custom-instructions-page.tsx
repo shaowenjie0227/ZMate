@@ -244,7 +244,7 @@ export function CustomInstructionsPage() {
       <p className="text-sm text-muted-foreground">{t("customInstructions.description")}</p>
 
       {headerActionsEl &&
-        stage !== "idle" &&
+        stage === "active" &&
         createPortal(
           <SegmentedOptions
             items={[

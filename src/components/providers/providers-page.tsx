@@ -96,8 +96,6 @@ function normalizeBaseUrlFor(url: string, protocol: ProviderApiType): string {
 
 interface ModelDraft {
   selected: boolean;
-  /** 高级选项区展开状态（纯 UI 状态，不参与提交） */
-  advancedOpen: boolean;
   contextWindow: string;
   supportsImage: boolean;
   maxOutput: string;
@@ -224,7 +222,7 @@ export function ProvidersPage() {
   return (
     <div className="space-y-6">
       {headerActionsEl &&
-        stage !== "idle" &&
+        stage === "active" &&
         createPortal(
           <>
             <Button variant="outline" onClick={() => setSiteImportOpen(true)}>
@@ -559,7 +557,6 @@ function ProviderCard({
 function emptyDraft(protocol: ProviderApiType): ModelDraft {
   return {
     selected: true,
-    advancedOpen: false,
     contextWindow: "",
     supportsImage: true,
     maxOutput: "",
@@ -579,7 +576,6 @@ function draftFromSummary(
 ): ModelDraft {
   return {
     selected: true,
-    advancedOpen: false,
     contextWindow: model.contextWindow != null ? String(model.contextWindow) : "",
     supportsImage: model.supportsImage ?? false,
     maxOutput: model.maxOutputTokens != null ? String(model.maxOutputTokens) : "",
@@ -615,11 +611,13 @@ function ProviderFormDialog({
   const [drafts, setDrafts] = useState<Record<string, ModelDraft>>({});
   const [connectivity, setConnectivity] = useState<TestResult | null>(null);
   const [fetchInfo, setFetchInfo] = useState<string | null>(null);
+  const [moreSettingsOpen, setMoreSettingsOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setConnectivity(null);
     setFetchInfo(null);
+    setMoreSettingsOpen(false);
     setShowKey(false);
     if (editing) {
       setProtocol(editing.apiType);
@@ -907,15 +905,6 @@ function ProviderFormDialog({
               {testMutation.isPending && <Loader2 className="animate-spin" />}
               {testMutation.isPending ? t("providers.wizard.testing") : t("providers.wizard.testConnection")}
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={fetchMutation.isPending || !baseUrl.trim() || !apiKey.trim()}
-              onClick={() => fetchMutation.mutate()}
-            >
-              {fetchMutation.isPending ? <Loader2 className="animate-spin" /> : null}
-              {fetchMutation.isPending ? t("providers.wizard.fetching") : t("providers.wizard.fetchModels")}
-            </Button>
             {!editing && (
               <span className="text-xs text-muted-foreground">{t("providers.wizard.apiKeyDesc")}</span>
             )}
@@ -940,43 +929,78 @@ function ProviderFormDialog({
           )}
 
           {/* ---------- 模型 ---------- */}
-          {models.length > 0 && (
-            <>
-              <div className="flex items-center justify-between pt-1">
-                <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
-                  {t("providers.sectionModels", { count: selectedCount })}
-                </p>
-                <Button type="button" variant="ghost" size="xs" onClick={toggleAll}>
-                  {selectedCount === models.length ? t("common.cancel") : t("common.confirm")}
+          <div className="space-y-2 pt-1">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                {t("providers.sectionModels", { count: selectedCount })}
+              </p>
+              <div className="flex items-center gap-1">
+                {models.length > 0 && (
+                  <Button type="button" variant="ghost" size="xs" onClick={toggleAll}>
+                    {selectedCount === models.length ? t("common.cancel") : t("common.confirm")}
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  disabled={fetchMutation.isPending || !baseUrl.trim() || !apiKey.trim()}
+                  onClick={() => fetchMutation.mutate()}
+                >
+                  {fetchMutation.isPending && <Loader2 className="size-3.5 animate-spin" />}
+                  {t("providers.wizard.fetchModels")}
                 </Button>
               </div>
-              <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+            </div>
+            {models.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+                {t("providers.site.modelsEmpty")}
+              </p>
+            ) : (
+              <div className="max-h-64 space-y-0.5 overflow-y-auto rounded-xl border border-border p-2">
                 {models.map((id) => {
                   const draft = drafts[id] ?? emptyDraft(protocol);
                   return (
-                    <div key={id} className="rounded-xl border border-border px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          checked={draft.selected}
-                          onCheckedChange={(checked) => updateDraft(id, { selected: checked === true })}
-                        />
-                        <span className="min-w-0 flex-1 truncate font-mono text-sm">{id}</span>
-                        <button
-                          type="button"
-                          onClick={() => updateDraft(id, { advancedOpen: !draft.advancedOpen })}
-                          className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                        >
-                          <ChevronRight
-                            className={cn(
-                              "size-3.5 transition-transform",
-                              draft.advancedOpen && "rotate-90",
-                            )}
-                          />
-                          {t("providers.wizard.advanced")}
-                        </button>
-                      </div>
+                    <div
+                      key={id}
+                      className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-muted/40"
+                    >
+                      <Checkbox
+                        checked={draft.selected}
+                        onCheckedChange={(checked) => updateDraft(id, { selected: checked === true })}
+                      />
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm">{id}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
-                      {draft.selected && (
+          {models.length > 0 && (
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => setMoreSettingsOpen((v) => !v)}
+                className={cn(
+                  "flex items-center gap-1.5 text-sm font-medium transition-colors",
+                  moreSettingsOpen
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <ChevronDown
+                  className={cn("size-4 transition-transform", !moreSettingsOpen && "-rotate-90")}
+                />
+                {t("providers.site.moreSettings")}
+              </button>
+              {moreSettingsOpen && (
+                <div className="max-h-[26rem] space-y-1.5 overflow-y-auto rounded-xl border border-border p-2">
+                  {models.map((id) => {
+                    const draft = drafts[id] ?? emptyDraft(protocol);
+                    return (
+                      <div key={id} className="rounded-xl border border-border/60 px-2.5 py-2">
+                        <p className="px-0.5 font-mono text-xs font-medium">{id}</p>
                         <div className="mt-3 space-y-3 border-t border-border/60 pt-3">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <Label className="text-xs text-muted-foreground">
@@ -1013,7 +1037,6 @@ function ProviderFormDialog({
                               );
                             })}
                           </div>
-                          {draft.advancedOpen && (
                           <div className="flex flex-wrap items-center gap-3">
                             <div className="flex items-center gap-1.5">
                               <Label className="text-xs text-muted-foreground">
@@ -1040,8 +1063,6 @@ function ProviderFormDialog({
                               />
                             </div>
                           </div>
-                          )}
-                          {draft.advancedOpen && (
                           <div className="flex flex-wrap items-center gap-3">
                             <Label className="text-xs text-muted-foreground">
                               {t("providers.site.inputTypes")}
@@ -1078,9 +1099,7 @@ function ProviderFormDialog({
                               {t("providers.site.inputPdf")}
                             </label>
                           </div>
-                          )}
 
-                          {draft.advancedOpen && (
                           <div className="flex flex-wrap items-center gap-1.5">
                             <Label className="text-xs text-muted-foreground">
                               {t("providers.site.capabilities")}
@@ -1111,9 +1130,7 @@ function ProviderFormDialog({
                               );
                             })}
                           </div>
-                          )}
 
-                          {draft.advancedOpen && (
                           <div className="space-y-1">
                             <Label className="text-xs text-muted-foreground">
                               {t("providers.wizard.reasoningLevels")}
@@ -1156,9 +1173,7 @@ function ProviderFormDialog({
                               {t("providers.wizard.reasoningLevelsDesc")}
                             </p>
                           </div>
-                          )}
 
-                          {draft.advancedOpen && (
                           <div className="space-y-1">
                             <Input
                               value={draft.reasoningMap}
@@ -1170,14 +1185,13 @@ function ProviderFormDialog({
                               {t("providers.wizard.reasoningMapDesc")}
                             </p>
                           </div>
-                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           )}
         </div>
 

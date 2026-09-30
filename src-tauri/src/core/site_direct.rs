@@ -106,7 +106,14 @@ pub fn ping_target(label: &str, origin: &str) -> SiteDirectPing {
 
 pub fn load_status(paths: &ZCodePaths) -> Result<SiteDirectStatus, CoreError> {
     let settings = settings::load_settings(paths);
-    let current_origin = known_origin_of(&settings.site_base_url);
+    // 已存连接的地址优先；未连接（base_url 为空）时回落到用户最近选择的直连入口，
+    // 让登录页 / 向导的站点地址默认值在断开后仍跟随切换结果
+    let current_origin = known_origin_of(&settings.site_base_url).or_else(|| {
+        settings
+            .site_direct_origin
+            .clone()
+            .filter(|origin| ORIGINS_BY_PRIORITY.contains(&origin.as_str()))
+    });
     let provider_matches = count_provider_matches(paths);
 
     Ok(SiteDirectStatus {
@@ -163,7 +170,9 @@ pub fn apply_origin(paths: &ZCodePaths, target_origin: &str) -> Result<SiteDirec
         )));
     }
 
-    // 1. settings.json：AppSettings 是面板自有的小结构，直接改字段整写
+    // 1. settings.json：AppSettings 是面板自有的小结构，直接改字段整写。
+    //    除替换已有 base_url 外，还记录本次选择的入口（site_direct_origin）——
+    //    未连接时 base_url 为空，登录页/向导的默认地址要靠它跟随直连切换。
     let mut settings = settings::load_settings(paths);
     let mut settings_updated = false;
     for origin in ORIGINS_BY_PRIORITY {
@@ -171,6 +180,10 @@ pub fn apply_origin(paths: &ZCodePaths, target_origin: &str) -> Result<SiteDirec
             settings.site_base_url = settings.site_base_url.replace(origin, target_origin);
             settings_updated = true;
         }
+    }
+    if settings.site_direct_origin.as_deref() != Some(target_origin) {
+        settings.site_direct_origin = Some(target_origin.to_string());
+        settings_updated = true;
     }
     if settings_updated {
         settings::save_settings(paths, &settings)?;
@@ -438,6 +451,36 @@ mod tests {
 
         let err = apply_origin(&paths, "https://evil.example.com").unwrap_err();
         assert!(err.to_string().contains("未知站点入口"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn apply_records_origin_preference_while_disconnected() {
+        let dir = temp_home("disconnected");
+        let home = dir.join(".zcode");
+        // 未连接：settings.json 里没有站点地址与令牌
+        std::fs::write(
+            dir.join(".zcode/zmate/settings.json"),
+            json!({ "checkZcodeRunning": true }).to_string(),
+        )
+        .unwrap();
+        let paths = ZCodePaths::from_home(home);
+
+        let report = apply_origin(&paths, ORIGIN_IP_PRIMARY).unwrap();
+        assert!(report.settings_updated);
+        assert_eq!(report.effective_base_url, "", "未连接不得凭空生成连接地址");
+
+        // 断开状态下状态查询也能给出最近选择的入口（登录默认地址的数据源）
+        let status = load_status(&paths).unwrap();
+        assert!(status.direct_active);
+        assert_eq!(status.current_origin.as_deref(), Some(ORIGIN_IP_PRIMARY));
+
+        // 换回域名后偏好同步更新
+        apply_origin(&paths, ORIGIN_DOMAIN).unwrap();
+        let status = load_status(&paths).unwrap();
+        assert!(!status.direct_active);
+        assert_eq!(status.current_origin.as_deref(), Some(ORIGIN_DOMAIN));
 
         std::fs::remove_dir_all(dir).unwrap();
     }
